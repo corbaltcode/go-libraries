@@ -25,6 +25,14 @@ type NamedMigration struct {
 // DoMigration method will execute all the SQL.
 type StaticMigration []string
 
+// A CustomMigration is cast from a function to create a Migration
+// which uses the function as its DoMigration method.
+type CustomMigration func(*sqlx.Tx) error
+
+func (m CustomMigration) DoMigration(tx *sqlx.Tx) error {
+	return m(tx)
+}
+
 func (m StaticMigration) DoMigration(tx *sqlx.Tx) error {
 	for _, sql := range m {
 		_, err := tx.Exec(sql)
