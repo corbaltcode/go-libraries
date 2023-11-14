@@ -1,0 +1,28 @@
+name: Verify migrations
+on: push
+
+jobs:
+  verify-migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Run schema test
+        env:
+          SCHEMA_TEST_POSTGRES_PORT: 5432
+        run: |
+          go run ./cmd/schema-test
