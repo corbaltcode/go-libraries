@@ -1,6 +1,7 @@
 package migrations
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -42,9 +43,27 @@ func dump(c *PostgresConfig) ([]byte, error) {
 	return out, err
 }
 
-// Schema test expects a new empty postgres database.
-// It is destructive, so you should not call it on a database with data
-// or one that has had migrations already applied.
+func verifyNoTables(db *sqlx.DB) error {
+	// Based on the query run for the "\d" command in psql
+	// (as revealed when started with -E flag).
+	q := `SELECT 1 FROM pg_catalog.pg_class c
+		LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+		WHERE c.relkind IN ('r','p','v','m','S','f','')
+		AND n.nspname <> 'pg_catalog'
+		AND n.nspname !~ '^pg_toast'
+		AND n.nspname <> 'information_schema'`
+	var ignored int
+	err := db.QueryRow(q).Scan(&ignored)
+	if err == sql.ErrNoRows {
+		// Expected
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("Error checking for existing tables: %w", err)
+	}
+	return errors.New("Existing tables found. You must run SchemaTest on an empty database.")
+}
+
+// Schema test expects a new *empty* postgres database.
 // It will, for each migration:
 // 1. Apply the migration
 // 2. Reverse the migration
@@ -74,6 +93,10 @@ func SchemaTest(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration) e
 	if err != nil {
 		return fmt.Errorf("Error connecting: %s", err)
 	}
+	err = verifyNoTables(db)
+	if err != nil {
+		return err
+	}
 	err = Migrate(db, []NamedMigration{})
 	if err != nil {
 		return fmt.Errorf("Setting up migrations table failed: %s", err)
@@ -83,7 +106,6 @@ func SchemaTest(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration) e
 		if err != nil {
 			return fmt.Errorf("Error calling pg_dump: %s", err)
 		}
-		os.WriteFile("/tmp/beforeMigrate", beforeMigrate, 0644)
 		err = Migrate(db, allMigrations[:idx+1])
 		if err != nil {
 			return fmt.Errorf("Migration %q failed: %s", migration.Name, err)
