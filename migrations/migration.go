@@ -19,6 +19,8 @@ type Migration interface {
 type NamedMigration struct {
 	Name      string
 	Migration Migration
+	// Does the opposite of the above Migration
+	Reverse Migration
 }
 
 // A Migration that is just a list of SQL statements to perform. The
@@ -117,6 +119,68 @@ func doMigrations(tx *sqlx.Tx, migrations []NamedMigration, startIndex int) erro
 		}
 	}
 
+	return nil
+}
+
+// Rollback runs the Reverse migrations for all the input migrations with index >= rollBackThroughIndex.
+// The input migrations must include all migrations, not just the ones to roll back.
+func Rollback(db *sqlx.DB, migrations []NamedMigration, rollBackThroughIndex int) error {
+	err := ensureMigrationsTableExists(db)
+	if err != nil {
+		return err
+	}
+	tx, err := db.Beginx()
+	if err != nil {
+		return fmt.Errorf("Error starting migrations transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			err := tx.Rollback()
+			if err != nil {
+				log.Printf("Error rolling back migrations transaction: %s", err)
+			}
+		}
+	}()
+
+	_, err = tx.Exec("LOCK TABLE migration")
+	if err != nil {
+		return fmt.Errorf("Error locking migration table: %w", err)
+	}
+
+	firstUnappliedIndex, err := verifyMigrations(tx, migrations)
+	if err != nil {
+		return err
+	}
+
+	if rollBackThroughIndex < 0 {
+		return fmt.Errorf("Invalid target index %d", rollBackThroughIndex)
+	}
+	if rollBackThroughIndex >= firstUnappliedIndex {
+		return fmt.Errorf("Migration %d has not been applied yet", rollBackThroughIndex)
+	}
+
+	for index := firstUnappliedIndex - 1; index >= rollBackThroughIndex; index-- {
+		migration := migrations[index]
+		if migration.Reverse == nil {
+			return fmt.Errorf("No Reverse for migration %d (%q)", index, migration.Name)
+		}
+		log.Printf("Reversing migration %d (%q)", index, migration.Name)
+		err := migrations[index].Reverse.DoMigration(tx)
+		if err != nil {
+			return fmt.Errorf("Error reversing migration %d (%q): %w", index, migration.Name, err)
+		}
+		_, err = tx.Exec(`DELETE FROM migration WHERE "index"=$1`, index)
+		if err != nil {
+			return fmt.Errorf("Error deleting migration row %d (%q): %w", index, migration.Name, err)
+		}
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("Error committing migrations: %w", err)
+	}
+	committed = true
 	return nil
 }
 
