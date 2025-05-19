@@ -55,7 +55,7 @@ const createMigrationsTableSQL = `
 	)`
 
 func ensureMigrationsTableExists(db *sqlx.DB) error {
-	row := db.QueryRow("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'migration')")
+	row := db.QueryRow("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'migration' AND table_schema = current_schema())")
 	exists := false
 	err := row.Scan(&exists)
 	if err != nil {
