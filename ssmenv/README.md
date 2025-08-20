@@ -1,0 +1,4 @@
+# ssmenv
+This package allows you to load environment variables from SSM. Any environment variable with its value set to `LOADFROMSSM:<ssm-parameter-name>` will be loaded with the correct value from SSM. To use it, import this package as `_ "github.com/corbaltcode/go-libraries/ssmenv"` wherever the environment variable is being used, and the `ssmenv` script with set the correct value. 
+
+For example, if you have a SSM parameter named `example-ssm-parameter`, and you'd like to set its value set on an environment variable named `ENVIRONMENT_VAR`, you'd set the value of `ENVIRONMENT_VAR`  to `LOADFROMSSM:example-ssm-parameter`. In your Go code that uses `ENVIRONMENT_VAR`, you'd import this pacakge as explained above, and the correct value will be loaded from SSM for `ENVIRONMENT_VAR`.
