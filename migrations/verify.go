@@ -33,6 +33,8 @@ func dump(c *PostgresConfig) ([]byte, error) {
 		"-h", c.Host,
 		"-p", c.Port,
 		"-U", c.User,
+		// if not specified, will be random, so not repeatable
+		"--restrict-key=key",
 		c.Database)
 	cmd.Dir = tempDir
 	cmd.Env = append(cmd.Env, "PGPASSFILE="+passFilePath)
