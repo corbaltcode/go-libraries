@@ -105,33 +105,10 @@ func verifyMigrations(tx *sqlx.Tx, migrations []NamedMigration) (firstUnappliedM
 	return firstUnappliedMigrationIndex, nil
 }
 
-func doMigrations(tx *sqlx.Tx, migrations []NamedMigration, startIndex int) error {
-	for index := startIndex; index < len(migrations); index++ {
-		migration := migrations[index]
-		log.Printf("Performing migration %d (%q)", index, migration.Name)
-		err := migrations[index].Migration.DoMigration(tx)
-		if err != nil {
-			return fmt.Errorf("Error performing migration %d (%q): %w", index, migration.Name, err)
-		}
-		_, err = tx.Exec(`INSERT INTO migration ("index", name) VALUES ($1, $2)`, index, migration.Name)
-		if err != nil {
-			return fmt.Errorf("Error recording migration %d (%q): %w", index, migration.Name, err)
-		}
-	}
-
-	return nil
-}
-
-// Rollback runs the Reverse migrations for all the input migrations with index >= rollBackThroughIndex.
-// The input migrations must include all migrations, not just the ones to roll back.
-func Rollback(db *sqlx.DB, migrations []NamedMigration, rollBackThroughIndex int) error {
-	err := ensureMigrationsTableExists(db)
-	if err != nil {
-		return err
-	}
+func migrateOne(db *sqlx.DB, migrations []NamedMigration) (bool, error) {
 	tx, err := db.Beginx()
 	if err != nil {
-		return fmt.Errorf("Error starting migrations transaction: %w", err)
+		return false, fmt.Errorf("Error starting migrations transaction: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -145,43 +122,107 @@ func Rollback(db *sqlx.DB, migrations []NamedMigration, rollBackThroughIndex int
 
 	_, err = tx.Exec("LOCK TABLE migration")
 	if err != nil {
-		return fmt.Errorf("Error locking migration table: %w", err)
+		return false, fmt.Errorf("Error locking migration table: %w", err)
 	}
 
 	firstUnappliedIndex, err := verifyMigrations(tx, migrations)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if firstUnappliedIndex >= len(migrations) {
+		return false, nil
+	}
+
+	migration := migrations[firstUnappliedIndex]
+	log.Printf("Performing migration %d (%q)", firstUnappliedIndex, migration.Name)
+	err = migrations[firstUnappliedIndex].Migration.DoMigration(tx)
+	if err != nil {
+		return false, fmt.Errorf("Error performing migration %d (%q): %w", firstUnappliedIndex, migration.Name, err)
+	}
+	_, err = tx.Exec(`INSERT INTO migration ("index", name) VALUES ($1, $2)`, firstUnappliedIndex, migration.Name)
+	if err != nil {
+		return false, fmt.Errorf("Error recording migration %d (%q): %w", firstUnappliedIndex, migration.Name, err)
+	}
+
+	committed = true
+	err = tx.Commit()
+	if err != nil {
+		return false, fmt.Errorf("Error committing migrations: %w", err)
+	}
+	return true, nil
+}
+
+func rollbackOne(db *sqlx.DB, migrations []NamedMigration, rollBackThroughIndex int) (rolledBackIndex int, err error) {
+	tx, err := db.Beginx()
+	if err != nil {
+		return -1, fmt.Errorf("Error starting migrations transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			err := tx.Rollback()
+			if err != nil {
+				log.Printf("Error rolling back migrations transaction: %s", err)
+			}
+		}
+	}()
+
+	_, err = tx.Exec("LOCK TABLE migration")
+	if err != nil {
+		return -1, fmt.Errorf("Error locking migration table: %w", err)
+	}
+
+	firstUnappliedIndex, err := verifyMigrations(tx, migrations)
+	if err != nil {
+		return -1, err
 	}
 
 	if rollBackThroughIndex < 0 {
-		return fmt.Errorf("Invalid target index %d", rollBackThroughIndex)
+		return -1, fmt.Errorf("Invalid target index %d", rollBackThroughIndex)
 	}
 	if rollBackThroughIndex >= firstUnappliedIndex {
-		return fmt.Errorf("Migration %d has not been applied yet", rollBackThroughIndex)
+		return -1, fmt.Errorf("Migration %d has not been applied yet", rollBackThroughIndex)
 	}
 
-	for index := firstUnappliedIndex - 1; index >= rollBackThroughIndex; index-- {
-		migration := migrations[index]
-		if migration.Reverse == nil {
-			return fmt.Errorf("No Reverse for migration %d (%q)", index, migration.Name)
-		}
-		log.Printf("Reversing migration %d (%q)", index, migration.Name)
-		err := migrations[index].Reverse.DoMigration(tx)
-		if err != nil {
-			return fmt.Errorf("Error reversing migration %d (%q): %w", index, migration.Name, err)
-		}
-		_, err = tx.Exec(`DELETE FROM migration WHERE "index"=$1`, index)
-		if err != nil {
-			return fmt.Errorf("Error deleting migration row %d (%q): %w", index, migration.Name, err)
-		}
+	index := firstUnappliedIndex - 1
+	migration := migrations[index]
+	if migration.Reverse == nil {
+		return -1, fmt.Errorf("No Reverse for migration %d (%q)", index, migration.Name)
+	}
+	log.Printf("Reversing migration %d (%q)", index, migration.Name)
+	err = migrations[index].Reverse.DoMigration(tx)
+	if err != nil {
+		return -1, fmt.Errorf("Error reversing migration %d (%q): %w", index, migration.Name, err)
+	}
+	_, err = tx.Exec(`DELETE FROM migration WHERE "index"=$1`, index)
+	if err != nil {
+		return -1, fmt.Errorf("Error deleting migration row %d (%q): %w", index, migration.Name, err)
 	}
 
+	committed = true
 	err = tx.Commit()
 	if err != nil {
-		return fmt.Errorf("Error committing migrations: %w", err)
+		return -1, fmt.Errorf("Error committing migrations: %w", err)
 	}
-	committed = true
-	return nil
+	return index, nil
+}
+
+// Rollback runs the Reverse migrations for all the input migrations with index >= rollBackThroughIndex.
+// The input migrations must include all migrations, not just the ones to roll back.
+func Rollback(db *sqlx.DB, migrations []NamedMigration, rollBackThroughIndex int) error {
+	err := ensureMigrationsTableExists(db)
+	if err != nil {
+		return err
+	}
+	for {
+		rolledBackIndex, err := rollbackOne(db, migrations, rollBackThroughIndex)
+		if err != nil {
+			return err
+		}
+		if rolledBackIndex == rollBackThroughIndex {
+			return nil
+		}
+	}
 }
 
 // Migrate does the following:
@@ -193,39 +234,13 @@ func Migrate(db *sqlx.DB, migrations []NamedMigration) error {
 	if err != nil {
 		return err
 	}
-	tx, err := db.Beginx()
-	if err != nil {
-		return fmt.Errorf("Error starting migrations transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			err := tx.Rollback()
-			if err != nil {
-				log.Printf("Error rolling back migrations transaction: %s", err)
-			}
+	for {
+		migrated, err := migrateOne(db, migrations)
+		if err != nil {
+			return err
 		}
-	}()
-
-	_, err = tx.Exec("LOCK TABLE migration")
-	if err != nil {
-		return fmt.Errorf("Error locking migration table: %w", err)
+		if !migrated {
+			return nil
+		}
 	}
-
-	firstUnappliedIndex, err := verifyMigrations(tx, migrations)
-	if err != nil {
-		return err
-	}
-
-	err = doMigrations(tx, migrations, firstUnappliedIndex)
-	if err != nil {
-		return err
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		return fmt.Errorf("Error committing migrations: %w", err)
-	}
-	committed = true
-	return nil
 }
