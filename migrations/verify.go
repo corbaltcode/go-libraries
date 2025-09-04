@@ -65,15 +65,61 @@ func verifyNoTables(db *sqlx.DB) error {
 	return errors.New("Existing tables found. You must run SchemaTest on an empty database.")
 }
 
+func migrateAndRollback(emptyDBConfig *PostgresConfig, db *sqlx.DB, allMigrations []NamedMigration, migrateToIndex, rollbackThroughIndex int, repeatForward bool) error {
+	beforeMigrate, err := dump(emptyDBConfig)
+	if err != nil {
+		return fmt.Errorf("Error calling pg_dump: %s", err)
+	}
+	err = Migrate(db, allMigrations[:migrateToIndex+1])
+	if err != nil {
+		return fmt.Errorf("Migrate to %q failed: %s", allMigrations[migrateToIndex].Name, err)
+	}
+	afterMigrate, err := dump(emptyDBConfig)
+	if err != nil {
+		return fmt.Errorf("Error calling pg_dump: %s", err)
+	}
+	err = Rollback(db, allMigrations, rollbackThroughIndex)
+	if err != nil {
+		return fmt.Errorf("Rollback through %q failed: %s", allMigrations[rollbackThroughIndex].Name, err)
+	}
+	afterRollback, err := dump(emptyDBConfig)
+	if err != nil {
+		return fmt.Errorf("Error calling pg_dump: %s", err)
+	}
+	if string(beforeMigrate) != string(afterRollback) {
+		fmt.Printf("%s\n", cmp.Diff(string(beforeMigrate), string(afterRollback)))
+		return fmt.Errorf("Dump after rollback through %q did not match the dump before the migration", allMigrations[rollbackThroughIndex].Name)
+	}
+	if repeatForward {
+		err = Migrate(db, allMigrations[:migrateToIndex+1])
+		if err != nil {
+			return fmt.Errorf("Migration to %q failed: %s", allMigrations[migrateToIndex].Name, err)
+		}
+		afterMigrateAgain, err := dump(emptyDBConfig)
+		if err != nil {
+			return fmt.Errorf("Error calling pg_dump: %s", err)
+		}
+		if string(afterMigrate) != string(afterMigrateAgain) {
+			fmt.Printf("%s\n", cmp.Diff(string(afterMigrate), string(afterMigrateAgain)))
+			return fmt.Errorf("Dump after re-migration of %q did not match dump after first migration", allMigrations[migrateToIndex].Name)
+		}
+	}
+	return err
+}
+
 // Schema test expects a new *empty* postgres database.
-// It will, for each migration:
-// 1. Apply the migration
-// 2. Reverse the migration
-// 3. Apply the migration again
+// It will:
+//  1. Apply all migrations
+//  2. Reverse all migrations
+//  3. For each migration:
+//     a. Apply the migration
+//     b. Reverse the migration
+//     c. Apply the migration again
+//
 // Before and after each step it will use pg_dump to dump the database schema.
 // It will verify that:
-// A. The schema is the same after step 2 as before step 1.
-// B. The schema is the same after step 3 as after step 1.
+// A. The schema is the same after reversing as before applying.
+// B. (If re-applying) The schema is the same after applying as after re-applying.
 //
 // You must have `pg_dump` in your `PATH` to run this.
 func SchemaTest(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration) error {
@@ -103,42 +149,14 @@ func SchemaTest(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration) e
 	if err != nil {
 		return fmt.Errorf("Setting up migrations table failed: %s", err)
 	}
-	for idx, migration := range allMigrations {
-		beforeMigrate, err := dump(emptyDBConfig)
+	err = migrateAndRollback(emptyDBConfig, db, allMigrations, len(allMigrations)-1, 0, false)
+	if err != nil {
+		return err
+	}
+	for idx := range allMigrations {
+		err := migrateAndRollback(emptyDBConfig, db, allMigrations, idx, idx, true)
 		if err != nil {
-			return fmt.Errorf("Error calling pg_dump: %s", err)
-		}
-		err = Migrate(db, allMigrations[:idx+1])
-		if err != nil {
-			return fmt.Errorf("Migration %q failed: %s", migration.Name, err)
-		}
-		afterMigrate, err := dump(emptyDBConfig)
-		if err != nil {
-			return fmt.Errorf("Error calling pg_dump: %s", err)
-		}
-		err = Rollback(db, allMigrations, idx)
-		if err != nil {
-			return fmt.Errorf("Rollback to %q failed: %s", migration.Name, err)
-		}
-		afterRollback, err := dump(emptyDBConfig)
-		if err != nil {
-			return fmt.Errorf("Error calling pg_dump: %s", err)
-		}
-		if string(beforeMigrate) != string(afterRollback) {
-			fmt.Printf("%s\n", cmp.Diff(string(beforeMigrate), string(afterRollback)))
-			return fmt.Errorf("Dump after rollback of %q did not match the dump before the migration", migration.Name)
-		}
-		err = Migrate(db, allMigrations[:idx+1])
-		if err != nil {
-			return fmt.Errorf("Migration %q failed: %s", migration.Name, err)
-		}
-		afterMigrateAgain, err := dump(emptyDBConfig)
-		if err != nil {
-			return fmt.Errorf("Error calling pg_dump: %s", err)
-		}
-		if string(afterMigrate) != string(afterMigrateAgain) {
-			fmt.Printf("%s\n", cmp.Diff(string(afterMigrate), string(afterMigrateAgain)))
-			return fmt.Errorf("Dump after re-migration of %q did not match dump after first migration", migration.Name)
+			return err
 		}
 	}
 	return nil

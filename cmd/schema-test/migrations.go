@@ -68,4 +68,13 @@ var allMigrations = []migrations.NamedMigration{
 			`DROP TYPE type1_old`,
 		}),
 	},
+	{
+		Name: "Create a view referencing a new enum value",
+		Migration: migrations.StaticMigration([]string{
+			`CREATE VIEW v AS SELECT * FROM table3 WHERE v = 'type1val3'`,
+		}),
+		Reverse: migrations.StaticMigration([]string{
+			`DROP VIEW v`,
+		}),
+	},
 }
