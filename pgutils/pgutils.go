@@ -14,7 +14,7 @@ import (
 // Given a postgres connection string, generate a new one with the search path
 // (https://www.postgresql.org/docs/17/ddl-schemas.html#DDL-SCHEMAS-PATH)
 // set to just the given schema name.
-func GetConnectionStringWithSearchPath(connStr, schemaName string) (string, error) {
+func getConnectionStringWithSearchPath(connStr, schemaName string) (string, error) {
 	kvconn := connStr
 	if strings.HasPrefix(connStr, "postgres://") || strings.HasPrefix(connStr, "postgresql://") {
 		var err error
@@ -41,7 +41,7 @@ func GetConnectionStringWithSearchPath(connStr, schemaName string) (string, erro
 // (https://www.postgresql.org/docs/17/ddl-schemas.html#DDL-SCHEMAS-PATH)
 // set to just the given schema name.
 func ConnectWithSchema(dbConnectionString, schemaName string) (*sqlx.DB, error) {
-	connStringWithSearchPath, err := GetConnectionStringWithSearchPath(dbConnectionString, schemaName)
+	connStringWithSearchPath, err := getConnectionStringWithSearchPath(dbConnectionString, schemaName)
 	if err != nil {
 		return nil, fmt.Errorf("Error getting updated connection string: %w", err)
 	}
@@ -77,11 +77,11 @@ func getSchemaName(testName string) string {
 // (https://www.postgresql.org/docs/17/ddl-schemas.html#DDL-SCHEMAS-PATH)
 // It also registers a cleanup function (https://pkg.go.dev/testing#T.Cleanup)
 // that will drop the schema after the test completes.
-func ReconnectWithSchemaForTest(dbConnectionString string, t *testing.T) *sqlx.DB {
+func ConnectWithSchemaForTest(dbConnectionString string, t *testing.T) *sqlx.DB {
 	// Create test schema and set search path
 	schemaName := getSchemaName(t.Name())
 
-	connStringWithSearchPath, err := GetConnectionStringWithSearchPath(dbConnectionString, schemaName)
+	connStringWithSearchPath, err := getConnectionStringWithSearchPath(dbConnectionString, schemaName)
 	if err != nil {
 		t.Fatalf("Error getting connection string: %s", err)
 	}
