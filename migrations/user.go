@@ -1,6 +1,7 @@
 package migrations
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 
@@ -30,13 +31,10 @@ func EnsureUsersWithRoles(db *sqlx.DB, users []PostgreSQLUser, authType UserAuth
 	if err != nil {
 		return fmt.Errorf("Error starting transaction: %w", err)
 	}
-	committed := false
 	defer func() {
-		if !committed {
-			err := tx.Rollback()
-			if err != nil {
-				log.Printf("Error rollink back: %s", err)
-			}
+		err := tx.Rollback()
+		if err != nil && err != sql.ErrTxDone {
+			log.Printf("Error rolling back: %s", err)
 		}
 	}()
 
@@ -119,7 +117,6 @@ func EnsureUsersWithRoles(db *sqlx.DB, users []PostgreSQLUser, authType UserAuth
 		}
 	}
 
-	committed = true
 	err = tx.Commit()
 	if err != nil {
 		return fmt.Errorf("Error committing transaction: %w", err)
