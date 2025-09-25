@@ -13,11 +13,19 @@ type PostgreSQLUser struct {
 	GrantRoles []string
 }
 
+type UserAuthenticationType string
+
+const (
+	UserAuthenticationTypeIAM      UserAuthenticationType = "iam"
+	UserAuthenticationTypePassword UserAuthenticationType = "password"
+)
+
 // Make sure that the given users exist in database cluster and have only the
-// role memberships specified. If withPasswords is true, set each user's password
-// to its username. Otherwise remove each user's password.
+// role memberships specified. If authType is UserAuthenticationTypePassword,
+// set each user's password to its username. Otherwise remove each user's password
+// and also add the rds_iam role for each user.
 // All operations are done in a single transaction.
-func EnsureUsersWithRoles(db *sqlx.DB, users []PostgreSQLUser, withPasswords bool) error {
+func EnsureUsersWithRoles(db *sqlx.DB, users []PostgreSQLUser, authType UserAuthenticationType) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("Error starting transaction: %w", err)
@@ -75,7 +83,11 @@ func EnsureUsersWithRoles(db *sqlx.DB, users []PostgreSQLUser, withPasswords boo
 		// But we will just worry about roles.
 
 		// Add roles
-		for _, role := range user.GrantRoles {
+		roles := user.GrantRoles
+		if authType == UserAuthenticationTypeIAM {
+			roles = append(roles, "rds_iam")
+		}
+		for _, role := range roles {
 			grantSQL := fmt.Sprintf("GRANT %s TO %s", pq.QuoteIdentifier(role), pq.QuoteIdentifier(user.Username))
 			_, err = tx.Exec(grantSQL)
 			if err != nil {
@@ -84,7 +96,8 @@ func EnsureUsersWithRoles(db *sqlx.DB, users []PostgreSQLUser, withPasswords boo
 		}
 
 		// Set or remove password
-		if withPasswords {
+		switch authType {
+		case UserAuthenticationTypePassword:
 			_, err = tx.Exec(
 				fmt.Sprintf("ALTER USER %s WITH PASSWORD %s",
 					pq.QuoteIdentifier(user.Username),
@@ -93,7 +106,7 @@ func EnsureUsersWithRoles(db *sqlx.DB, users []PostgreSQLUser, withPasswords boo
 			if err != nil {
 				return fmt.Errorf("Failed to set password for user %q: %w", user.Username, err)
 			}
-		} else {
+		case UserAuthenticationTypeIAM:
 			_, err = tx.Exec(
 				fmt.Sprintf("ALTER USER %s WITH PASSWORD NULL",
 					pq.QuoteIdentifier(user.Username)),
@@ -101,6 +114,8 @@ func EnsureUsersWithRoles(db *sqlx.DB, users []PostgreSQLUser, withPasswords boo
 			if err != nil {
 				return fmt.Errorf("Failed to remove password for user %q: %w", user.Username, err)
 			}
+		default:
+			return fmt.Errorf("Invalid authType %q", authType)
 		}
 	}
 
