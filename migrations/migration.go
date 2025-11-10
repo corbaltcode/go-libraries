@@ -244,3 +244,13 @@ func Migrate(db *sqlx.DB, migrations []NamedMigration) error {
 		}
 	}
 }
+
+func EnsureSchema(db *sqlx.DB, schemaName string) error {
+	q := fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", schemaName)
+	_, err := db.Exec(q)
+	if err != nil {
+		return fmt.Errorf("Error ensuring schema %q: %w", schemaName, err)
+	}
+
+	return nil
+}
