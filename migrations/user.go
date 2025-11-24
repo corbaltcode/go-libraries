@@ -56,8 +56,8 @@ func EnsureUsersWithRoles(db *sqlx.DB, users []PostgreSQLUser, authType UserAuth
 			return fmt.Errorf("Failed to create user %q: %w", user.Username, err)
 		}
 
-		// Drop all existing roles
-		dropRolesSQL := fmt.Sprintf(`
+		// Revoke all existing roles
+		revokeRolesSQL := fmt.Sprintf(`
 			DO $$
 			DECLARE
 				r RECORD;
@@ -71,16 +71,16 @@ func EnsureUsersWithRoles(db *sqlx.DB, users []PostgreSQLUser, authType UserAuth
 				END LOOP;
 			END
 			$$;`, pq.QuoteLiteral(user.Username), pq.QuoteIdentifier(user.Username))
-		_, err = tx.Exec(dropRolesSQL)
+		_, err = tx.Exec(revokeRolesSQL)
 		if err != nil {
-			return fmt.Errorf("Failed to drop roles for user %q: %w", user.Username, err)
+			return fmt.Errorf("Failed to revoke roles for user %q: %w", user.Username, err)
 		}
 
 		// There could be privileges on a variety of different objects.
 		// See https://www.postgresql.org/docs/current/sql-revoke.html
 		// But we will just worry about roles.
 
-		// Add roles
+		// Grant roles
 		roles := user.GrantRoles
 		if authType == UserAuthenticationTypeIAM {
 			roles = append(roles, "rds_iam")
@@ -89,7 +89,7 @@ func EnsureUsersWithRoles(db *sqlx.DB, users []PostgreSQLUser, authType UserAuth
 			grantSQL := fmt.Sprintf("GRANT %s TO %s", pq.QuoteIdentifier(role), pq.QuoteIdentifier(user.Username))
 			_, err = tx.Exec(grantSQL)
 			if err != nil {
-				return fmt.Errorf("Failed to give role %q to user %q: %w", role, user.Username, err)
+				return fmt.Errorf("Failed to grant role %q to user %q: %w", role, user.Username, err)
 			}
 		}
 
