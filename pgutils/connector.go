@@ -122,7 +122,7 @@ func (p *iamAuthConnectionStringProvider) getBaseConnectionString(ctx context.Co
 	if err != nil {
 		return "", fmt.Errorf("building auth token: %w", err)
 	}
-	log.Printf("Signing RDS IAM token for endpoint: %s user: %s", p.RDSEndpoint, p.User)
+	log.Printf("Signing RDS IAM token for \n  Endpoint: %s \n User: %s \n Database: %s", p.RDSEndpoint, p.User, p.Database)
 
 	dsnURL := &url.URL{
 		Scheme: "postgresql",
