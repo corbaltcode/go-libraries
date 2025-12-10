@@ -154,7 +154,7 @@ func NewPostgresqlConnectorWithIAMAuth(ctx context.Context, cfg *IAMAuthConfig) 
 	// If AssumeRoleARN is set, assume a role in the RDS account (Account A)
 	// using the ECS task role creds from Account B as the source credentials.
 	if cfg.AssumeRoleARN != "" {
-                log.Printf("RDS IAM Assuming Role: %s", cfg.AssumeRoleARN)
+		log.Printf("RDS IAM Assuming Role: %s for \n  Endpoint: %s \n  User: %s \n  Database: %s", cfg.AssumeRoleARN, cfg.RDSEndpoint, cfg.User, cfg.Database)
 		stsClient := sts.NewFromConfig(awsCfg)
 
 		sessionName := cfg.AssumeRoleSessionName
