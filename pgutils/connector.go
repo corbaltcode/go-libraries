@@ -90,12 +90,6 @@ func NewPostgresqlConnectorFromConnectionString(connectionString string) *Postgr
 	}
 }
 
-//type IAMAuthConfig struct {
-//	RDSEndpoint string
-//	User        string
-//	Database    string
-//}
-
 type IAMAuthConfig struct {
 	RDSEndpoint string
 	User        string
@@ -128,7 +122,7 @@ func (p *iamAuthConnectionStringProvider) getBaseConnectionString(ctx context.Co
 	if err != nil {
 		return "", fmt.Errorf("building auth token: %w", err)
 	}
-	log.Printf("Signing RDS IAM token for user: %s", p.User)
+	log.Printf("Signing RDS IAM token for endpoint: %s user: %s", p.RDSEndpoint, p.User)
 
 	dsnURL := &url.URL{
 		Scheme: "postgresql",
@@ -160,6 +154,7 @@ func NewPostgresqlConnectorWithIAMAuth(ctx context.Context, cfg *IAMAuthConfig) 
 	// If AssumeRoleARN is set, assume a role in the RDS account (Account A)
 	// using the ECS task role creds from Account B as the source credentials.
 	if cfg.AssumeRoleARN != "" {
+                log.Printf("RDS IAM Assuming Role: %s", cfg.AssumeRoleARN)
 		stsClient := sts.NewFromConfig(awsCfg)
 
 		sessionName := cfg.AssumeRoleSessionName
