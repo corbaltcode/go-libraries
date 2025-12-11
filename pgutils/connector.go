@@ -192,3 +192,23 @@ func OpenDB(conn *PostgresqlConnector) *sqlx.DB {
 	sqlDB := sql.OpenDB(conn)
 	return sqlx.NewDb(sqlDB, "postgres")
 }
+
+// ConnectDB opens a connection using the connector and verifies it with a ping
+func ConnectDB(conn *PostgresqlConnector) (*sqlx.DB, error) {
+	db := OpenDB(conn)
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+// MustConnectDB is like ConnectDB but panics on error
+func MustConnectDB(conn *PostgresqlConnector) *sqlx.DB {
+	db, err := ConnectDB(conn)
+	if err != nil {
+		panic(err)
+	}
+	return db
+}
+
