@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"time"
 
 	"database/sql"
 	"database/sql/driver"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/feature/rds/auth"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
@@ -91,6 +94,20 @@ type IAMAuthConfig struct {
 	RDSEndpoint string
 	User        string
 	Database    string
+
+	// Optional: cross-account role assumption.
+	// Set this to a role ARN in the RDS account (Account A) that has rds-db:connect.
+	AssumeRoleARN string
+
+	// Optional: if your trust policy requires an external ID.
+	AssumeRoleExternalID string
+
+	// Optional: override the default session name.
+	AssumeRoleSessionName string
+
+	// Optional: override STS assume role duration.
+	// If zero, SDK default is used.
+	AssumeRoleDuration time.Duration
 }
 
 type iamAuthConnectionStringProvider struct {
@@ -105,7 +122,7 @@ func (p *iamAuthConnectionStringProvider) getBaseConnectionString(ctx context.Co
 	if err != nil {
 		return "", fmt.Errorf("building auth token: %w", err)
 	}
-	log.Printf("Signing RDS IAM token for user: %s", p.User)
+	log.Printf("Signing RDS IAM token for \n  Endpoint: %s \n  User: %s \n  Database: %s", p.RDSEndpoint, p.User, p.Database)
 
 	dsnURL := &url.URL{
 		Scheme: "postgresql",
@@ -131,11 +148,41 @@ func NewPostgresqlConnectorWithIAMAuth(ctx context.Context, cfg *IAMAuthConfig) 
 		return nil, errors.New("AWS region is not configured")
 	}
 
+	creds := awsCfg.Credentials
+
+	// Cross-account support:
+	// If AssumeRoleARN is set, assume a role in the RDS account (Account A)
+	// using the ECS task role creds from Account B as the source credentials.
+	if cfg.AssumeRoleARN != "" {
+		log.Printf("RDS IAM Assuming Role: %s for \n  Endpoint: %s \n  User: %s \n  Database: %s", cfg.AssumeRoleARN, cfg.RDSEndpoint, cfg.User, cfg.Database)
+		stsClient := sts.NewFromConfig(awsCfg)
+
+		sessionName := cfg.AssumeRoleSessionName
+		if sessionName == "" {
+			sessionName = "pgutils-rds-iam"
+		}
+
+		assumeProvider := stscreds.NewAssumeRoleProvider(stsClient, cfg.AssumeRoleARN, func(assumeRoleOpts *stscreds.AssumeRoleOptions) {
+			assumeRoleOpts.RoleSessionName = sessionName
+
+			if cfg.AssumeRoleExternalID != "" {
+				assumeRoleOpts.ExternalID = aws.String(cfg.AssumeRoleExternalID)
+			}
+
+			if cfg.AssumeRoleDuration != 0 {
+				assumeRoleOpts.Duration = cfg.AssumeRoleDuration
+			}
+		})
+
+		// Cache to avoid calling STS too frequently.
+		creds = aws.NewCredentialsCache(assumeProvider)
+	}
+
 	return &PostgresqlConnector{
 		baseConnectionStringProvider: &iamAuthConnectionStringProvider{
 			IAMAuthConfig: *cfg,
 			region:        awsCfg.Region,
-			creds:         awsCfg.Credentials,
+			creds:         creds,
 		},
 	}, nil
 }
@@ -145,4 +192,3 @@ func OpenDB(conn *PostgresqlConnector) *sqlx.DB {
 	sqlDB := sql.OpenDB(conn)
 	return sqlx.NewDb(sqlDB, "postgres")
 }
-
