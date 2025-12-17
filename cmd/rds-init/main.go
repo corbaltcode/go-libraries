@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,7 +33,7 @@ const (
 
 type dbConnInfo struct {
 	Host   string
-	Port   string
+	Port   int
 	DBName string
 	User   string
 	RawDSN string
@@ -50,16 +52,19 @@ func randomPassword(n int) (string, error) {
 	if n <= 0 {
 		return "", errors.New("password length must be > 0")
 	}
-	buf := make([]byte, n)
-	charsetLen := byte(len(passwordCharset))
 
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("failed to read random bytes: %w", err)
+	max := big.NewInt(int64(len(passwordCharset)))
+	out := make([]byte, n)
+
+	for i := 0; i < n; i++ {
+		x, err := rand.Int(rand.Reader, max)
+		if err != nil {
+			return "", fmt.Errorf("rand.Int: %w", err)
+		}
+		out[i] = passwordCharset[x.Int64()]
 	}
-	for i, b := range buf {
-		buf[i] = passwordCharset[b%charsetLen]
-	}
-	return string(buf), nil
+
+	return string(out), nil
 }
 
 func parseDSN(dsn string) (*dbConnInfo, error) {
@@ -77,10 +82,16 @@ func parseDSN(dsn string) (*dbConnInfo, error) {
 	}
 
 	host := u.Hostname()
-	port := u.Port()
-	if port == "" {
-		port = defaultPostgresPort
+
+	portStr := u.Port()
+	if portStr == "" {
+		portStr = defaultPostgresPort
 	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid port %q: %w", portStr, err)
+	}
+
 	dbname := strings.TrimPrefix(u.Path, "/")
 
 	// If path is empty, optionally look for ?dbname=foo
@@ -205,12 +216,9 @@ func main() {
 	smClient := secretsmanager.NewFromConfig(awsCfg)
 	rdsClient := rds.NewFromConfig(awsCfg)
 
-	portInt := 5432
-	fmt.Sscanf(connInfo.Port, "%d", &portInt)
-
-	dbIdentifier, err := findDBInstanceByEndpoint(ctx, rdsClient, connInfo.Host, int32(portInt))
+	dbIdentifier, err := findDBInstanceByEndpoint(ctx, rdsClient, connInfo.Host, int32(connInfo.Port))
 	if err != nil {
-		log.Fatalf("Could not look up RDS DB instance for endpoint %s:%d: %v", connInfo.Host, portInt, err)
+		log.Fatalf("Could not look up RDS DB instance for endpoint %s:%d: %v", connInfo.Host, connInfo.Port, err)
 	}
 	log.Printf("Discovered RDS DB instance identifier: %s", dbIdentifier)
 
@@ -240,7 +248,7 @@ func main() {
 	secretBody := &nessusSecret{
 		Engine:   "postgres",
 		Host:     connInfo.Host,
-		Port:     portInt,
+		Port:     connInfo.Port,
 		Username: nessusUserName,
 		Password: password,
 		DBName:   connInfo.DBName,
