@@ -167,12 +167,7 @@ func printCallerIdentity(ctx context.Context, cfg aws.Config) error {
 		return fmt.Errorf("STS GetCallerIdentity failed (creds invalid/expired or STS not allowed): %w", err)
 	}
 
-	account := aws.ToString(out.Account)
-	arn := aws.ToString(out.Arn)
-
-	fmt.Printf("AWS Account: %s\n", account)
-	fmt.Printf("Caller ARN:  %s\n", arn)
-
+	fmt.Printf("Caller ARN:  %s\n", aws.ToString(out.Arn))
 	return nil
 }
 
