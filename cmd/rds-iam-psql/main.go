@@ -175,3 +175,4 @@ func printCallerIdentity(ctx context.Context, cfg aws.Config) error {
 
 	return nil
 }
+
