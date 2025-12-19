@@ -170,4 +170,3 @@ func printCallerIdentity(ctx context.Context, cfg aws.Config) error {
 	fmt.Printf("Caller ARN:  %s\n", aws.ToString(out.Arn))
 	return nil
 }
-
