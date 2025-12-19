@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"math/big"
 	"net/url"
 	"os"
 	"strconv"
@@ -26,8 +26,6 @@ import (
 
 const (
 	nessusUserName      = "nessus_scan_user"
-	passwordLength      = 22
-	passwordCharset     = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	defaultPostgresPort = "5432"
 )
 
@@ -48,23 +46,15 @@ type nessusSecret struct {
 	DBName   string `json:"dbname"`
 }
 
-func randomPassword(n int) (string, error) {
-	if n <= 0 {
-		return "", errors.New("password length must be > 0")
+func randomHexPassword() (string, error) {
+	b := make([]byte, 16) // 16 bytes (32 hex chars)
+
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to read random bytes: %w", err)
 	}
 
-	max := big.NewInt(int64(len(passwordCharset)))
-	out := make([]byte, n)
-
-	for i := 0; i < n; i++ {
-		x, err := rand.Int(rand.Reader, max)
-		if err != nil {
-			return "", fmt.Errorf("rand.Int: %w", err)
-		}
-		out[i] = passwordCharset[x.Int64()]
-	}
-
-	return string(out), nil
+	s := hex.EncodeToString(b) // lowercase hex
+	return s[:32], nil         // 32 hex chars (16 bytes)
 }
 
 func parseDSN(dsn string) (*dbConnInfo, error) {
@@ -234,11 +224,14 @@ func main() {
 	}
 
 	var password string
-	if existingSecret != nil && existingSecret.Password != "" {
+	if existingSecret != nil {
+		if existingSecret.Password == "" {
+			log.Fatal("Malformed secret with an empty password. Please manually verify the secret and re-run.")
+		}
 		password = existingSecret.Password
 		log.Printf("Reusing existing password from secret %q.", secretName)
 	} else {
-		password, err = randomPassword(passwordLength)
+		password, err = randomHexPassword()
 		if err != nil {
 			log.Fatalf("Error generating random password: %v", err)
 		}
