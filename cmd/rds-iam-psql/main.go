@@ -1,4 +1,3 @@
-// rds-iam-psql.go
 package main
 
 import (
@@ -8,7 +7,9 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -51,12 +52,6 @@ func main() {
 	if awsRegion == "" {
 		awsRegion = cfg.Region
 	}
-	if awsRegion == "" {
-		// Last resort: try to infer from the hostname if it looks like a standard RDS endpoint.
-		if inferred := inferRegionFromHost(*host); inferred != "" {
-			awsRegion = inferred
-		}
-	}
 
 	if awsRegion == "" {
 		log.Fatalf("AWS region is not set; pass -region or set AWS_REGION / configure your AWS profile")
@@ -93,10 +88,8 @@ func main() {
 
 	// If a search path is provided, wire it through PGOPTIONS.
 	if sp := strings.TrimSpace(*searchPath); sp != "" {
-		// Build our addition: one -c flag.
 		add := "-c search_path=" + sp
 
-		// Check if PGOPTIONS already exists; if so, append.
 		found := false
 		for i, e := range env {
 			if strings.HasPrefix(e, "PGOPTIONS=") {
@@ -117,23 +110,46 @@ func main() {
 
 	cmd.Env = env
 
-	if err := cmd.Run(); err != nil {
-		// psql will print its own error messages; just propagate the exit code.
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			os.Exit(exitErr.ExitCode())
+	// --- Ctrl-C handling ---
+	// The key idea: keep psql in the same foreground process group so it can read
+	// from the terminal. We intercept SIGINT only to prevent THIS wrapper from
+	// exiting; psql will still receive SIGINT normally and cancel the current
+	// query / line as expected.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	if err := cmd.Start(); err != nil {
+		log.Fatalf("failed to start psql: %v", err)
+	}
+
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+
+	for {
+		select {
+		case sig := <-sigCh:
+			switch sig {
+			case os.Interrupt:
+				// Swallow SIGINT so this wrapper doesn't exit.
+				// psql still gets SIGINT (same terminal foreground process group).
+				continue
+			case syscall.SIGTERM:
+				// If we're being terminated, pass it through to psql and exit accordingly.
+				if cmd.Process != nil {
+					_ = cmd.Process.Signal(syscall.SIGTERM)
+				}
+			}
+		case err := <-waitCh:
+			// psql exited; now we exit with the same code.
+			if err == nil {
+				return
+			}
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				os.Exit(exitErr.ExitCode())
+			}
+			log.Fatalf("psql failed: %v", err)
 		}
-		log.Fatalf("failed to run psql: %v", err)
 	}
 }
 
-// inferRegionFromHost tries to pull the AWS region out of a typical RDS hostname like
-// "mydb.abc123.us-east-1.rds.amazonaws.com". If it can't, it returns "".
-func inferRegionFromHost(host string) string {
-	parts := strings.Split(host, ".")
-	for i := 0; i < len(parts); i++ {
-		if parts[i] == "rds" && i > 0 {
-			return parts[i-1]
-		}
-	}
-	return ""
-}
