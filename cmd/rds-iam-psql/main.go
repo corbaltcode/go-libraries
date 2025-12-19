@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/rds/auth"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 func main() {
@@ -46,6 +47,11 @@ func main() {
 	}
 	if err != nil {
 		log.Fatalf("failed to load AWS config: %v", err)
+	}
+
+	// Fail fast + print identity (account/arn/role-ish).
+	if err := printCallerIdentity(ctx, cfg); err != nil {
+		log.Fatalf("AWS credentials check failed: %v", err)
 	}
 
 	awsRegion := *region
@@ -153,3 +159,19 @@ func main() {
 	}
 }
 
+func printCallerIdentity(ctx context.Context, cfg aws.Config) error {
+	stsClient := sts.NewFromConfig(cfg)
+
+	out, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return fmt.Errorf("STS GetCallerIdentity failed (creds invalid/expired or STS not allowed): %w", err)
+	}
+
+	account := aws.ToString(out.Account)
+	arn := aws.ToString(out.Arn)
+
+	fmt.Printf("AWS Account: %s\n", account)
+	fmt.Printf("Caller ARN:  %s\n", arn)
+
+	return nil
+}
