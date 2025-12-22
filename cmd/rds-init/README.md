@@ -44,7 +44,6 @@ After configuring the Nessus user, the tool grants `rds_iam` to the currently au
 ## When to Run
 
 - **Initial provisioning** — Run after creating a new RDS instance
-- **Password rotation** — Run after manually updating the password in the `{db-identifier}_nessus` Secrets Manager secret to sync it to the database
 - **Safe to rerun on failure** — On success password auth will be disabled for the admin user. As this tool requires password auth, subsequent runs will not be possible. If the script exits unsuccessfully before disabling password auth, it is safe to execute multiple times.
 
 ## Prerequisites
