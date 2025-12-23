@@ -216,14 +216,27 @@ func MustConnectDB(conn *PostgresqlConnector) *sqlx.DB {
 	return db
 }
 
+// NewPostgresqlConnectorFromDSN constructs a PostgresqlConnector from either a normal
+// Postgres DSN/connection string or the custom postgres+rds-iam DSN used for RDS IAM auth.
+//
+// IAM example 1: postgres+rds-iam://<user>@<host>[:<port>]/<dbname>
+//
+// Optional query params (for cross-account IAM):
+//   - assume_role_arn: role ARN to assume.
+//   - assume_role_session_name: only used when assume_role_arn is set; defaults to "pgutils-rds-iam" if omitted.
+//
+// IAM example 2: postgres+rds-iam://<user>@<host>[:<port>]/<dbname>?assume_role_arn=...&assume_role_session_name=...
 func NewPostgresqlConnectorFromDSN(ctx context.Context, dsn string) (*PostgresqlConnector, error) {
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return nil, fmt.Errorf("filed to parse DSN: %w", err)
+	if dsn == "" {
+		return nil, errors.New("DSN cannot be empty")
 	}
 
-	if u.Scheme != "postgres+rds-iam" {
-		// Not our custom scheme: hand off to existing DSN handling.
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse DSN: %w", err)
+	}
+
+	if u.Scheme != "postgres+rds-iam" { // Not our custom scheme: hand off to existing DSN handling.
 		return NewPostgresqlConnectorFromConnectionString(dsn), nil
 	}
 
@@ -255,15 +268,12 @@ func NewPostgresqlConnectorFromDSN(ctx context.Context, dsn string) (*Postgresql
 	}
 
 	q := u.Query()
-	supportedParams := []string{"assume_role_arn", "assume_role_session_name"}
+	supportedParams := []string{"assume_role_arn", "assume_role_session_name", "assume_role_external_id", "assume_role_duration"}
 	for k := range q {
 		if !slices.Contains(supportedParams, k) {
 			return nil, fmt.Errorf("postgres+rds-iam DSN has unsupported query parameter: %s", k)
 		}
 	}
-
-	assumeRoleARN := q.Get("assume_role_arn")
-	assumeRoleSessionName := q.Get("assume_role_session_name")
 
 	cfg := &IAMAuthConfig{
 		RDSEndpoint: host + ":" + port,
@@ -271,9 +281,10 @@ func NewPostgresqlConnectorFromDSN(ctx context.Context, dsn string) (*Postgresql
 		Database:    dbName,
 	}
 
+	assumeRoleARN := q.Get("assume_role_arn")
 	if assumeRoleARN != "" {
 		cfg.AssumeRoleARN = assumeRoleARN
-		cfg.AssumeRoleSessionName = assumeRoleSessionName
+		cfg.AssumeRoleSessionName = q.Get("assume_role_session_name")
 	}
 
 	return NewPostgresqlConnectorWithIAMAuth(ctx, cfg)
