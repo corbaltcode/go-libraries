@@ -268,7 +268,7 @@ func NewPostgresqlConnectorFromDSN(ctx context.Context, dsn string) (*Postgresql
 	}
 
 	q := u.Query()
-	supportedParams := []string{"assume_role_arn", "assume_role_session_name", "assume_role_external_id", "assume_role_duration"}
+	supportedParams := []string{"assume_role_arn", "assume_role_session_name"}
 	for k := range q {
 		if !slices.Contains(supportedParams, k) {
 			return nil, fmt.Errorf("postgres+rds-iam DSN has unsupported query parameter: %s", k)
