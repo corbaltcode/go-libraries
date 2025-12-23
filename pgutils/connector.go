@@ -218,7 +218,11 @@ func MustConnectDB(conn *PostgresqlConnector) *sqlx.DB {
 
 func NewPostgresqlConnectorFromDSN(ctx context.Context, dsn string) (*PostgresqlConnector, error) {
 	u, err := url.Parse(dsn)
-	if err != nil || u.Scheme != "postgres+rds-iam" {
+	if err != nil {
+		return nil, fmt.Errorf("filed to parse DSN: %w", err)
+	}
+
+	if u.Scheme != "postgres+rds-iam" {
 		// Not our custom scheme: hand off to existing DSN handling.
 		return NewPostgresqlConnectorFromConnectionString(dsn), nil
 	}
