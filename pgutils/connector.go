@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"slices"
+	"strings"
 	"time"
 
 	"database/sql"
@@ -19,6 +21,8 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
+
+const defaultPostgresPort = "5432"
 
 type baseConnectionStringProvider interface {
 	getBaseConnectionString(ctx context.Context) (string, error)
@@ -212,3 +216,61 @@ func MustConnectDB(conn *PostgresqlConnector) *sqlx.DB {
 	return db
 }
 
+func NewPostgresqlConnectorFromDSN(ctx context.Context, dsn string) (*PostgresqlConnector, error) {
+	u, err := url.Parse(dsn)
+	if err != nil || u.Scheme != "postgres+rds-iam" {
+		// Not our custom scheme: hand off to existing DSN handling.
+		return NewPostgresqlConnectorFromConnectionString(dsn), nil
+	}
+
+	user := ""
+	if u.User != nil {
+		user = u.User.Username()
+		if _, hasPw := u.User.Password(); hasPw {
+			return nil, fmt.Errorf("postgres+rds-iam DSN must not include a password")
+		}
+	}
+	if user == "" {
+		return nil, fmt.Errorf("postgres+rds-iam DSN missing username")
+	}
+
+	host := u.Hostname()
+	if host == "" {
+		return nil, fmt.Errorf("postgres+rds-iam DSN missing host")
+	}
+
+	port := u.Port()
+	if port == "" {
+		port = defaultPostgresPort
+	}
+
+	// Match libpq/psql defaulting: if dbname isn't specified, dbname defaults to username.
+	dbName := strings.TrimPrefix(u.Path, "/")
+	if dbName == "" {
+		dbName = user
+	}
+
+	q := u.Query()
+	supportedParams := []string{"assume_role_arn", "assume_role_session_name"}
+	for k := range q {
+		if !slices.Contains(supportedParams, k) {
+			return nil, fmt.Errorf("postgres+rds-iam DSN has unsupported query parameter: %s", k)
+		}
+	}
+
+	assumeRoleARN := q.Get("assume_role_arn")
+	assumeRoleSessionName := q.Get("assume_role_session_name")
+
+	cfg := &IAMAuthConfig{
+		RDSEndpoint: host + ":" + port,
+		User:        user,
+		Database:    dbName,
+	}
+
+	if assumeRoleARN != "" {
+		cfg.AssumeRoleARN = assumeRoleARN
+		cfg.AssumeRoleSessionName = assumeRoleSessionName
+	}
+
+	return NewPostgresqlConnectorWithIAMAuth(ctx, cfg)
+}
