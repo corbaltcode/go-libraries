@@ -2,13 +2,11 @@ package pgutils
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/url"
-	"slices"
 	"strings"
-	"time"
 
 	"database/sql"
 	"database/sql/driver"
@@ -24,109 +22,153 @@ import (
 
 const defaultPostgresPort = "5432"
 
-type baseConnectionStringProvider interface {
-	getBaseConnectionString(ctx context.Context) (string, error)
+// ConnectionStringProvider returns a Postgres connection string for use by clients
+// that need a DSN (e.g., pq.Listener) or to build a connector.
+type ConnectionStringProvider interface {
+	ConnectionString(ctx context.Context) (string, error)
 }
 
-type PostgresqlConnector struct {
-	baseConnectionStringProvider
-	searchPath string
-}
+// NewConnectionStringProviderFromURL constructs a ConnectionStringProvider from a URL-form DSN.
+//
+// Standard Postgres example:
+//
+//	postgres://user:pass@host:5432/dbname?sslmode=require
+//
+// IAM example 1:
+//
+//	postgres+rds-iam://user@host:5432/dbname
+//
+// IAM example 2 (cross-account):
+//
+//	postgres+rds-iam://user@host:5432/dbname?assume_role_arn=...&assume_role_session_name=...
+//
+// For postgres+rds-iam, the provider generates a fresh IAM auth token on each ConnectionString(ctx) call.
+func NewConnectionStringProviderFromURL(ctx context.Context, rawURL string) (ConnectionStringProvider, error) {
+	if strings.TrimSpace(rawURL) == "" {
+		return nil, fmt.Errorf("rawURL cannot be empty")
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing URL: %w", err)
+	}
 
-func (conn *PostgresqlConnector) WithSearchPath(searchPath string) *PostgresqlConnector {
-	return &PostgresqlConnector{
-		baseConnectionStringProvider: conn.baseConnectionStringProvider,
-		searchPath:                   searchPath,
+	switch u.Scheme {
+	case "postgres", "postgresql":
+		return &staticConnectionStringProvider{connectionString: u.String()}, nil
+	case "postgres+rds-iam":
+		return newIAMConnectionStringProviderFromURL(ctx, u)
+	default:
+		return nil, fmt.Errorf("unsupported URL scheme: %s", u.Scheme)
 	}
 }
 
-func (conn *PostgresqlConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	dsn, err := conn.GetConnectionString(ctx)
+// NewConnectorFromURL constructs a driver.Connector from a URL-form DSN.
+//
+// Standard Postgres example:
+//
+//	postgres://user:pass@host:5432/dbname
+//
+// IAM example 1:
+//
+//	postgres+rds-iam://user@host:5432/dbname
+//
+// IAM example 2 (cross-account):
+//
+//	postgres+rds-iam://user@host:5432/dbname?assume_role_arn=...&assume_role_session_name=...
+//
+// For postgres+rds-iam, each Connect(ctx) call uses a fresh IAM auth token.
+func NewConnectorFromURL(ctx context.Context, rawURL string) (driver.Connector, error) {
+	provider, err := NewConnectionStringProviderFromURL(ctx, rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("get connection string: %w", err)
+		return nil, err
+	}
+	return &postgresqlConnector{connectionStringProvider: provider}, nil
+}
+
+// AddSearchPathToURL returns a copy of u with search_path set in the query string.
+// It returns an error if search_path is already present.
+func AddSearchPathToURL(u *url.URL, searchPath string) (*url.URL, error) {
+	if u == nil {
+		return nil, fmt.Errorf("URL cannot be nil")
+	}
+	if searchPath == "" {
+		uCopy := *u
+		return &uCopy, nil
+	}
+
+	uCopy := *u
+	q := uCopy.Query()
+	if v := q.Get("search_path"); v != "" {
+		return nil, fmt.Errorf("search_path already set to %q", v)
+	}
+	q.Set("search_path", searchPath)
+	uCopy.RawQuery = q.Encode()
+	return &uCopy, nil
+}
+
+type postgresqlConnector struct {
+	connectionStringProvider ConnectionStringProvider
+}
+
+func (c *postgresqlConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	dsn, err := c.connectionStringProvider.ConnectionString(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("error getting connection string from provider: %w", err)
 	}
 	pqConnector, err := pq.NewConnector(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("create pq connector: %w", err)
+		return nil, fmt.Errorf("error creating pq connector: %w", err)
 	}
 
 	return pqConnector.Connect(ctx)
 }
 
-func (conn *PostgresqlConnector) GetConnectionString(ctx context.Context) (string, error) {
-	dsn, err := conn.getBaseConnectionString(ctx)
-	if err != nil {
-		return "", fmt.Errorf("get base connection string: %w", err)
-	}
-	if conn.searchPath == "" {
-		return dsn, nil
-	}
-
-	// Add search path
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return "", fmt.Errorf("parse DSN URL: %w", err)
-	}
-	q := u.Query()
-	if v := q.Get("search_path"); v != "" {
-		return "", fmt.Errorf("search_path already set to %q", v)
-	}
-	q.Set("search_path", conn.searchPath) // url.Values will percent-encode commas as needed
-	u.RawQuery = q.Encode()
-	return u.String(), nil
+func (c *postgresqlConnector) Driver() driver.Driver {
+	return &pq.Driver{}
 }
 
-func (c *PostgresqlConnector) Driver() driver.Driver {
-	return &pq.Driver{}
+// ConnectDB opens a connection using the connector and verifies it with a ping
+func ConnectDB(conn driver.Connector) (*sqlx.DB, error) {
+	sqlDB := sql.OpenDB(conn)
+	db := sqlx.NewDb(sqlDB, "postgres")
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+// MustConnectDB is like ConnectDB but panics on error
+func MustConnectDB(conn driver.Connector) *sqlx.DB {
+	db, err := ConnectDB(conn)
+	if err != nil {
+		panic(err)
+	}
+	return db
 }
 
 type staticConnectionStringProvider struct {
 	connectionString string
 }
 
-func (p *staticConnectionStringProvider) getBaseConnectionString(ctx context.Context) (string, error) {
+func (p *staticConnectionStringProvider) ConnectionString(ctx context.Context) (string, error) {
 	return p.connectionString, nil
 }
 
-func NewPostgresqlConnectorFromConnectionString(connectionString string) *PostgresqlConnector {
-	return &PostgresqlConnector{
-		baseConnectionStringProvider: &staticConnectionStringProvider{connectionString},
-	}
+type rdsIAMConnectionStringProvider struct {
+	RDSEndpoint         string
+	Region              string
+	User                string
+	Database            string
+	CredentialsProvider aws.CredentialsProvider
 }
 
-type IAMAuthConfig struct {
-	RDSEndpoint string
-	User        string
-	Database    string
-
-	// Optional: cross-account role assumption.
-	// Set this to a role ARN in the RDS account (Account A) that has rds-db:connect.
-	AssumeRoleARN string
-
-	// Optional: if your trust policy requires an external ID.
-	AssumeRoleExternalID string
-
-	// Optional: override the default session name.
-	AssumeRoleSessionName string
-
-	// Optional: override STS assume role duration.
-	// If zero, SDK default is used.
-	AssumeRoleDuration time.Duration
-}
-
-type iamAuthConnectionStringProvider struct {
-	IAMAuthConfig
-
-	region string
-	creds  aws.CredentialsProvider
-}
-
-func (p *iamAuthConnectionStringProvider) getBaseConnectionString(ctx context.Context) (string, error) {
-	authToken, err := auth.BuildAuthToken(ctx, p.RDSEndpoint, p.region, p.User, p.creds)
+func (p *rdsIAMConnectionStringProvider) ConnectionString(ctx context.Context) (string, error) {
+	authToken, err := auth.BuildAuthToken(ctx, p.RDSEndpoint, p.Region, p.User, p.CredentialsProvider)
 	if err != nil {
-		return "", fmt.Errorf("building auth token: %w", err)
+		return "", fmt.Errorf("error building auth token: %w", err)
 	}
-	log.Printf("Signing RDS IAM token for \n  Endpoint: %s \n  User: %s \n  Database: %s", p.RDSEndpoint, p.User, p.Database)
+	log.Printf("Signing RDS IAM token for Endpoint: %s User: %s Database: %s", p.RDSEndpoint, p.User, p.Database)
 
 	dsnURL := &url.URL{
 		Scheme: "postgresql",
@@ -138,122 +180,21 @@ func (p *iamAuthConnectionStringProvider) getBaseConnectionString(ctx context.Co
 	return dsnURL.String(), nil
 }
 
-func NewPostgresqlConnectorWithIAMAuth(ctx context.Context, cfg *IAMAuthConfig) (*PostgresqlConnector, error) {
-	if cfg.RDSEndpoint == "" || cfg.User == "" || cfg.Database == "" {
-		return nil, errors.New("RDS endpoint, user, and database are required")
-	}
-
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("load AWS config: %w", err)
-	}
-
-	if awsCfg.Region == "" {
-		return nil, errors.New("AWS region is not configured")
-	}
-
-	creds := awsCfg.Credentials
-
-	// Cross-account support:
-	// If AssumeRoleARN is set, assume a role in the RDS account (Account A)
-	// using the ECS task role creds from Account B as the source credentials.
-	if cfg.AssumeRoleARN != "" {
-		log.Printf("RDS IAM Assuming Role: %s for \n  Endpoint: %s \n  User: %s \n  Database: %s", cfg.AssumeRoleARN, cfg.RDSEndpoint, cfg.User, cfg.Database)
-		stsClient := sts.NewFromConfig(awsCfg)
-
-		sessionName := cfg.AssumeRoleSessionName
-		if sessionName == "" {
-			sessionName = "pgutils-rds-iam"
-		}
-
-		assumeProvider := stscreds.NewAssumeRoleProvider(stsClient, cfg.AssumeRoleARN, func(assumeRoleOpts *stscreds.AssumeRoleOptions) {
-			assumeRoleOpts.RoleSessionName = sessionName
-
-			if cfg.AssumeRoleExternalID != "" {
-				assumeRoleOpts.ExternalID = aws.String(cfg.AssumeRoleExternalID)
-			}
-
-			if cfg.AssumeRoleDuration != 0 {
-				assumeRoleOpts.Duration = cfg.AssumeRoleDuration
-			}
-		})
-
-		// Cache to avoid calling STS too frequently.
-		creds = aws.NewCredentialsCache(assumeProvider)
-	}
-
-	return &PostgresqlConnector{
-		baseConnectionStringProvider: &iamAuthConnectionStringProvider{
-			IAMAuthConfig: *cfg,
-			region:        awsCfg.Region,
-			creds:         creds,
-		},
-	}, nil
-}
-
-// Provides missing sqlx.OpenDB
-func OpenDB(conn *PostgresqlConnector) *sqlx.DB {
-	sqlDB := sql.OpenDB(conn)
-	return sqlx.NewDb(sqlDB, "postgres")
-}
-
-// ConnectDB opens a connection using the connector and verifies it with a ping
-func ConnectDB(conn *PostgresqlConnector) (*sqlx.DB, error) {
-	db := OpenDB(conn)
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, err
-	}
-	return db, nil
-}
-
-// MustConnectDB is like ConnectDB but panics on error
-func MustConnectDB(conn *PostgresqlConnector) *sqlx.DB {
-	db, err := ConnectDB(conn)
-	if err != nil {
-		panic(err)
-	}
-	return db
-}
-
-// NewPostgresqlConnectorFromDSN constructs a PostgresqlConnector from either a normal
-// Postgres DSN/connection string or the custom postgres+rds-iam DSN used for RDS IAM auth.
-//
-// IAM example 1: postgres+rds-iam://<user>@<host>[:<port>]/<dbname>
-//
-// Optional query params (for cross-account IAM):
-//   - assume_role_arn: role ARN to assume.
-//   - assume_role_session_name: only used when assume_role_arn is set; defaults to "pgutils-rds-iam" if omitted.
-//
-// IAM example 2: postgres+rds-iam://<user>@<host>[:<port>]/<dbname>?assume_role_arn=...&assume_role_session_name=...
-func NewPostgresqlConnectorFromDSN(ctx context.Context, dsn string) (*PostgresqlConnector, error) {
-	if dsn == "" {
-		return nil, errors.New("DSN cannot be empty")
-	}
-
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse DSN: %w", err)
-	}
-
-	if u.Scheme != "postgres+rds-iam" { // Not our custom scheme: hand off to existing DSN handling.
-		return NewPostgresqlConnectorFromConnectionString(dsn), nil
-	}
-
+func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL) (ConnectionStringProvider, error) {
 	user := ""
 	if u.User != nil {
 		user = u.User.Username()
 		if _, hasPw := u.User.Password(); hasPw {
-			return nil, fmt.Errorf("postgres+rds-iam DSN must not include a password")
+			return nil, fmt.Errorf("postgres+rds-iam URL must not include a password")
 		}
 	}
 	if user == "" {
-		return nil, fmt.Errorf("postgres+rds-iam DSN missing username")
+		return nil, fmt.Errorf("postgres+rds-iam URL missing username")
 	}
 
 	host := u.Hostname()
 	if host == "" {
-		return nil, fmt.Errorf("postgres+rds-iam DSN missing host")
+		return nil, fmt.Errorf("postgres+rds-iam URL missing host")
 	}
 
 	port := u.Port()
@@ -268,24 +209,45 @@ func NewPostgresqlConnectorFromDSN(ctx context.Context, dsn string) (*Postgresql
 	}
 
 	q := u.Query()
-	supportedParams := []string{"assume_role_arn", "assume_role_session_name"}
+	supportedParams := map[string]struct{}{
+		"assume_role_arn":          {},
+		"assume_role_session_name": {},
+	}
 	for k := range q {
-		if !slices.Contains(supportedParams, k) {
-			return nil, fmt.Errorf("postgres+rds-iam DSN has unsupported query parameter: %s", k)
+		if _, ok := supportedParams[k]; !ok {
+			return nil, fmt.Errorf("postgres+rds-iam URL has unsupported query parameter: %s", k)
 		}
 	}
 
-	cfg := &IAMAuthConfig{
-		RDSEndpoint: host + ":" + port,
-		User:        user,
-		Database:    dbName,
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load AWS config: %w", err)
 	}
 
+	if awsCfg.Region == "" {
+		return nil, fmt.Errorf("AWS region is not configured")
+	}
+
+	creds := awsCfg.Credentials
 	assumeRoleARN := q.Get("assume_role_arn")
 	if assumeRoleARN != "" {
-		cfg.AssumeRoleARN = assumeRoleARN
-		cfg.AssumeRoleSessionName = q.Get("assume_role_session_name")
+		log.Printf("RDS IAM Assuming Role: %s for Host: %s User: %s Database: %s", assumeRoleARN, host, user, dbName)
+		stsClient := sts.NewFromConfig(awsCfg)
+		sessionName := q.Get("assume_role_session_name")
+		if sessionName == "" {
+			sessionName = "pgutils-rds-iam"
+		}
+		assumeProvider := stscreds.NewAssumeRoleProvider(stsClient, assumeRoleARN, func(opts *stscreds.AssumeRoleOptions) {
+			opts.RoleSessionName = sessionName
+		})
+		creds = aws.NewCredentialsCache(assumeProvider)
 	}
 
-	return NewPostgresqlConnectorWithIAMAuth(ctx, cfg)
+	return &rdsIAMConnectionStringProvider{
+		Region:              awsCfg.Region,
+		RDSEndpoint:         net.JoinHostPort(host, port),
+		User:                user,
+		Database:            dbName,
+		CredentialsProvider: creds,
+	}, nil
 }
