@@ -87,23 +87,31 @@ func NewConnectorFromURL(ctx context.Context, rawURL string) (driver.Connector, 
 
 // AddSearchPathToURL returns a copy of u with search_path set in the query string.
 // It returns an error if search_path is already present.
-func AddSearchPathToURL(u *url.URL, searchPath string) (*url.URL, error) {
+func AddSearchPathToURL(rawURL string, searchPath string) (string, error) {
+	if strings.TrimSpace(rawURL) == "" {
+		return "", fmt.Errorf("rawURL cannot be empty")
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("error parsing URL: %w", err)
+	}
+
 	if u == nil {
-		return nil, fmt.Errorf("URL cannot be nil")
+		return "", fmt.Errorf("URL cannot be nil")
 	}
 	if searchPath == "" {
 		uCopy := *u
-		return &uCopy, nil
+		return uCopy.String(), nil
 	}
 
 	uCopy := *u
 	q := uCopy.Query()
 	if v := q.Get("search_path"); v != "" {
-		return nil, fmt.Errorf("search_path already set to %q", v)
+		return "", fmt.Errorf("search_path already set to %q", v)
 	}
 	q.Set("search_path", searchPath)
 	uCopy.RawQuery = q.Encode()
-	return &uCopy, nil
+	return uCopy.String(), nil
 }
 
 type postgresqlConnector struct {
@@ -231,12 +239,12 @@ func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL) (Con
 	creds := awsCfg.Credentials
 	assumeRoleARN := q.Get("assume_role_arn")
 	if assumeRoleARN != "" {
-		log.Printf("RDS IAM Assuming Role: %s for Host: %s User: %s Database: %s", assumeRoleARN, host, user, dbName)
 		stsClient := sts.NewFromConfig(awsCfg)
 		sessionName := q.Get("assume_role_session_name")
 		if sessionName == "" {
 			sessionName = "pgutils-rds-iam"
 		}
+		log.Printf("RDS IAM Assuming Role: %s with session name: %s for Host: %s User: %s Database: %s", assumeRoleARN, sessionName, host, user, dbName)
 		assumeProvider := stscreds.NewAssumeRoleProvider(stsClient, assumeRoleARN, func(opts *stscreds.AssumeRoleOptions) {
 			opts.RoleSessionName = sessionName
 		})
