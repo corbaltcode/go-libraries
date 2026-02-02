@@ -69,7 +69,7 @@ func listenerEventToString(t pq.ListenerEventType) string {
 // The callback is invoked from the listener goroutine; it MUST NOT block
 // for long periods. If you need to do heavy work, offload it to another
 // goroutine.
-func Listen(ctx context.Context, provider ConnectionStringProvider, pgChannelName string, callback func(*pq.Notification), onClose func()) error {
+func Listen(ctx context.Context, cs ConnectionStringProvider, pgChannelName string, callback func(*pq.Notification), onClose func()) error {
 	if callback == nil {
 		return fmt.Errorf("listener callback cannot be nil")
 	}
@@ -77,7 +77,7 @@ func Listen(ctx context.Context, provider ConnectionStringProvider, pgChannelNam
 	reconnectEventCh := make(chan struct{}, 1) // We just need a single reconnect event to trigger, so buffer size of 1
 
 	makeListener := func() (*pq.Listener, error) {
-		url, err := provider.ConnectionString(ctx)
+		url, err := cs.ConnectionString(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("error getting connection string from provider: %w", err)
 		}
