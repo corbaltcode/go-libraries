@@ -26,6 +26,43 @@ const defaultPostgresPort = "5432"
 // that need a DSN (e.g., pq.Listener) or to build a connector.
 type ConnectionStringProvider interface {
 	ConnectionString(ctx context.Context) (string, error)
+	ToConnector() driver.Connector
+	WithSchemaSearchPath(path string) ConnectionStringProvider
+}
+
+type changedSearchPathConnectionStringProvider struct {
+	underlying ConnectionStringProvider
+	newPath    string
+}
+
+func addSearchPath(p ConnectionStringProvider, path string) ConnectionStringProvider {
+	return &changedSearchPathConnectionStringProvider{
+		underlying: p,
+		newPath:    path,
+	}
+}
+
+func (p *changedSearchPathConnectionStringProvider) ToConnector() driver.Connector {
+	return &postgresqlConnector{connectionStringProvider: p}
+}
+
+func (p *changedSearchPathConnectionStringProvider) WithSchemaSearchPath(path string) ConnectionStringProvider {
+	return addSearchPath(p, path)
+}
+
+func (p *changedSearchPathConnectionStringProvider) ConnectionString(ctx context.Context) (string, error) {
+	orig, err := p.ConnectionString(ctx)
+	if err != nil {
+		return "", err
+	}
+	u, err := url.Parse(orig)
+	if err != nil {
+		return "", fmt.Errorf("error parsing URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("search_path", p.newPath)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 // NewConnectionStringProviderFromURL constructs a ConnectionStringProvider from a URL-form DSN.
@@ -60,29 +97,6 @@ func NewConnectionStringProviderFromURL(ctx context.Context, rawURL string) (Con
 	default:
 		return nil, fmt.Errorf("unsupported URL scheme: %s", u.Scheme)
 	}
-}
-
-// NewConnectorFromURL constructs a driver.Connector from a URL-form DSN.
-//
-// Standard Postgres example:
-//
-//	postgres://user:pass@host:5432/dbname
-//
-// IAM example 1:
-//
-//	postgres+rds-iam://user@host:5432/dbname
-//
-// IAM example 2 (cross-account):
-//
-//	postgres+rds-iam://user@host:5432/dbname?assume_role_arn=...&assume_role_session_name=...
-//
-// For postgres+rds-iam, each Connect(ctx) call uses a fresh IAM auth token.
-func NewConnectorFromURL(ctx context.Context, rawURL string) (driver.Connector, error) {
-	provider, err := NewConnectionStringProviderFromURL(ctx, rawURL)
-	if err != nil {
-		return nil, err
-	}
-	return &postgresqlConnector{connectionStringProvider: provider}, nil
 }
 
 // AddSearchPathToURL returns a copy of u with search_path set in the query string.
@@ -163,6 +177,14 @@ func (p *staticConnectionStringProvider) ConnectionString(ctx context.Context) (
 	return p.connectionString, nil
 }
 
+func (p *staticConnectionStringProvider) ToConnector() driver.Connector {
+	return &postgresqlConnector{connectionStringProvider: p}
+}
+
+func (p *staticConnectionStringProvider) WithSchemaSearchPath(path string) ConnectionStringProvider {
+	return addSearchPath(p, path)
+}
+
 type rdsIAMConnectionStringProvider struct {
 	RDSEndpoint         string
 	Region              string
@@ -186,6 +208,14 @@ func (p *rdsIAMConnectionStringProvider) ConnectionString(ctx context.Context) (
 	}
 
 	return dsnURL.String(), nil
+}
+
+func (p *rdsIAMConnectionStringProvider) ToConnector() driver.Connector {
+	return &postgresqlConnector{connectionStringProvider: p}
+}
+
+func (p *rdsIAMConnectionStringProvider) WithSchemaSearchPath(path string) ConnectionStringProvider {
+	return addSearchPath(p, path)
 }
 
 func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL) (ConnectionStringProvider, error) {
