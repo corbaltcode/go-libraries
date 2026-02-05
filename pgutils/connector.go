@@ -22,13 +22,21 @@ import (
 
 const defaultPostgresPort = "5432"
 
+var pqDriver = &pq.Driver{}
+
 // ConnectionStringProvider returns a Postgres connection string for use by clients
 // that need a DSN (e.g., pq.Listener) or to build a connector.
 type ConnectionStringProvider interface {
 	ConnectionString(ctx context.Context) (string, error)
 }
 
-// NewConnectionStringProviderFromURL constructs a ConnectionStringProvider from a URL-form DSN.
+type connectionStringProviderFunc func(context.Context) (string, error)
+
+func (f connectionStringProviderFunc) ConnectionString(ctx context.Context) (string, error) {
+	return f(ctx)
+}
+
+// NewConnectionStringProviderFromURLString parses rawURL and constructs a provider.
 //
 // Standard Postgres example:
 //
@@ -43,15 +51,15 @@ type ConnectionStringProvider interface {
 //	postgres+rds-iam://user@host:5432/dbname?assume_role_arn=...&assume_role_session_name=...
 //
 // For postgres+rds-iam, the provider generates a fresh IAM auth token on each ConnectionString(ctx) call.
-func NewConnectionStringProviderFromURL(ctx context.Context, rawURL string) (ConnectionStringProvider, error) {
-	if strings.TrimSpace(rawURL) == "" {
-		return nil, fmt.Errorf("rawURL cannot be empty")
-	}
-	u, err := url.Parse(rawURL)
+func NewConnectionStringProviderFromURLString(ctx context.Context, rawURL string) (ConnectionStringProvider, error) {
+	u, err := parseURL(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing URL: %w", err)
+		return nil, err
 	}
 
+	if u.Scheme == "" {
+		return nil, fmt.Errorf("URL scheme is required (expected postgres, postgresql, or postgres+rds-iam)")
+	}
 	switch u.Scheme {
 	case "postgres", "postgresql":
 		return &staticConnectionStringProvider{connectionString: u.String()}, nil
@@ -62,77 +70,28 @@ func NewConnectionStringProviderFromURL(ctx context.Context, rawURL string) (Con
 	}
 }
 
-// NewConnectorFromURL constructs a driver.Connector from a URL-form DSN.
-//
-// Standard Postgres example:
-//
-//	postgres://user:pass@host:5432/dbname
-//
-// IAM example 1:
-//
-//	postgres+rds-iam://user@host:5432/dbname
-//
-// IAM example 2 (cross-account):
-//
-//	postgres+rds-iam://user@host:5432/dbname?assume_role_arn=...&assume_role_session_name=...
-//
-// For postgres+rds-iam, each Connect(ctx) call uses a fresh IAM auth token.
-func NewConnectorFromURL(ctx context.Context, rawURL string) (driver.Connector, error) {
-	provider, err := NewConnectionStringProviderFromURL(ctx, rawURL)
-	if err != nil {
-		return nil, err
+// ToConnector wraps a ConnectionStringProvider as a driver.Connector.
+// Each Connect(ctx) call asks the provider for a fresh DSN.
+func ToConnector(provider ConnectionStringProvider) driver.Connector {
+	if provider == nil {
+		panic("pgutils: ToConnector called with nil ConnectionStringProvider")
 	}
-	return &postgresqlConnector{connectionStringProvider: provider}, nil
+	return &postgresqlConnector{connectionStringProvider: provider}
 }
 
-// AddSearchPathToURL returns a copy of u with search_path set in the query string.
-// It returns an error if search_path is already present.
-func AddSearchPathToURL(rawURL string, searchPath string) (string, error) {
-	if strings.TrimSpace(rawURL) == "" {
-		return "", fmt.Errorf("rawURL cannot be empty")
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "", fmt.Errorf("error parsing URL: %w", err)
-	}
-
-	if u == nil {
-		return "", fmt.Errorf("URL cannot be nil")
-	}
-	if searchPath == "" {
-		uCopy := *u
-		return uCopy.String(), nil
-	}
-
-	uCopy := *u
-	q := uCopy.Query()
-	if v := q.Get("search_path"); v != "" {
-		return "", fmt.Errorf("search_path already set to %q", v)
-	}
-	q.Set("search_path", searchPath)
-	uCopy.RawQuery = q.Encode()
-	return uCopy.String(), nil
-}
-
-type postgresqlConnector struct {
-	connectionStringProvider ConnectionStringProvider
-}
-
-func (c *postgresqlConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	dsn, err := c.connectionStringProvider.ConnectionString(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("error getting connection string from provider: %w", err)
-	}
-	pqConnector, err := pq.NewConnector(dsn)
-	if err != nil {
-		return nil, fmt.Errorf("error creating pq connector: %w", err)
-	}
-
-	return pqConnector.Connect(ctx)
-}
-
-func (c *postgresqlConnector) Driver() driver.Driver {
-	return &pq.Driver{}
+// WithSchemaSearchPath returns a ConnectionStringProvider that appends search_path
+// to the DSN produced by the underlying provider.
+func WithSchemaSearchPath(provider ConnectionStringProvider, searchPath string) ConnectionStringProvider {
+	return connectionStringProviderFunc(func(ctx context.Context) (string, error) {
+		if provider == nil {
+			return "", fmt.Errorf("connection string provider cannot be nil")
+		}
+		dsn, err := provider.ConnectionString(ctx)
+		if err != nil {
+			return "", err
+		}
+		return addSearchPathToURL(dsn, searchPath)
+	})
 }
 
 // ConnectDB opens a connection using the connector and verifies it with a ping
@@ -155,6 +114,61 @@ func MustConnectDB(conn driver.Connector) *sqlx.DB {
 	return db
 }
 
+func parseURL(rawURL string) (*url.URL, error) {
+	if strings.TrimSpace(rawURL) == "" {
+		return nil, fmt.Errorf("rawURL cannot be empty")
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing URL: %w", err)
+	}
+	return u, nil
+}
+
+// addSearchPathToURL returns a copy of u with search_path set in the query string.
+// It returns an error if search_path is already present.
+func addSearchPathToURL(rawURL string, searchPath string) (string, error) {
+	u, err := parseURL(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("url string failed to parse while adding search path: %w", err)
+	}
+
+	if searchPath == "" {
+		uCopy := *u
+		return uCopy.String(), nil
+	}
+
+	uCopy := *u
+	q := uCopy.Query()
+	if v := q.Get("search_path"); v != "" {
+		return "", fmt.Errorf("search_path already set to %q", v)
+	}
+	q.Set("search_path", searchPath)
+	uCopy.RawQuery = q.Encode()
+	return uCopy.String(), nil
+}
+
+type postgresqlConnector struct {
+	connectionStringProvider ConnectionStringProvider
+}
+
+func (c *postgresqlConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	dsn, err := c.connectionStringProvider.ConnectionString(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("getting connection string from provider: %w", err)
+	}
+	pqConnector, err := pq.NewConnector(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("creating pq connector: %w", err)
+	}
+
+	return pqConnector.Connect(ctx)
+}
+
+func (c *postgresqlConnector) Driver() driver.Driver {
+	return pqDriver
+}
+
 type staticConnectionStringProvider struct {
 	connectionString string
 }
@@ -174,7 +188,7 @@ type rdsIAMConnectionStringProvider struct {
 func (p *rdsIAMConnectionStringProvider) ConnectionString(ctx context.Context) (string, error) {
 	authToken, err := auth.BuildAuthToken(ctx, p.RDSEndpoint, p.Region, p.User, p.CredentialsProvider)
 	if err != nil {
-		return "", fmt.Errorf("error building auth token: %w", err)
+		return "", fmt.Errorf("building auth token: %w", err)
 	}
 	log.Printf("Signing RDS IAM token for Endpoint: %s User: %s Database: %s", p.RDSEndpoint, p.User, p.Database)
 
