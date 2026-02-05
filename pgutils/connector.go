@@ -81,16 +81,27 @@ func ToConnector(provider ConnectionStringProvider) driver.Connector {
 
 // WithSchemaSearchPath returns a ConnectionStringProvider that appends search_path
 // to the DSN produced by the underlying provider.
+//
+// This is a "must-style" helper intended for fluent call chaining.
+// It panics if provider is nil, if the underlying provider errors, or if the
+// search_path cannot be applied (e.g., already set).
 func WithSchemaSearchPath(provider ConnectionStringProvider, searchPath string) ConnectionStringProvider {
+	if provider == nil {
+		panic("pgutils: WithSchemaSearchPath called with nil ConnectionStringProvider")
+	}
+
 	return connectionStringProviderFunc(func(ctx context.Context) (string, error) {
-		if provider == nil {
-			return "", fmt.Errorf("connection string provider cannot be nil")
-		}
 		dsn, err := provider.ConnectionString(ctx)
 		if err != nil {
-			return "", err
+			panic(fmt.Errorf("pgutils: ConnectionString failed: %w", err))
 		}
-		return addSearchPathToURL(dsn, searchPath)
+
+		dsnWithPath, err := addSearchPathToURL(dsn, searchPath)
+		if err != nil {
+			panic(fmt.Errorf("pgutils: applying schema search path failed: %w", err))
+		}
+
+		return dsnWithPath, nil
 	})
 }
 
