@@ -2,6 +2,7 @@ package pgutils
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -58,7 +59,7 @@ func NewConnectionStringProviderFromURLString(ctx context.Context, rawURL string
 	}
 
 	if u.Scheme == "" {
-		return nil, fmt.Errorf("URL scheme is required (expected postgres, postgresql, or postgres+rds-iam)")
+		return nil, errors.New("URL scheme is required (expected postgres, postgresql, or postgres+rds-iam)")
 	}
 	switch u.Scheme {
 	case "postgres", "postgresql":
@@ -116,7 +117,7 @@ func MustConnectDB(conn driver.Connector) *sqlx.DB {
 
 func parseURL(rawURL string) (*url.URL, error) {
 	if strings.TrimSpace(rawURL) == "" {
-		return nil, fmt.Errorf("rawURL cannot be empty")
+		return nil, errors.New("rawURL cannot be empty")
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -207,16 +208,16 @@ func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL) (Con
 	if u.User != nil {
 		user = u.User.Username()
 		if _, hasPw := u.User.Password(); hasPw {
-			return nil, fmt.Errorf("postgres+rds-iam URL must not include a password")
+			return nil, errors.New("postgres+rds-iam URL must not include a password")
 		}
 	}
 	if user == "" {
-		return nil, fmt.Errorf("postgres+rds-iam URL missing username")
+		return nil, errors.New("postgres+rds-iam URL missing username")
 	}
 
 	host := u.Hostname()
 	if host == "" {
-		return nil, fmt.Errorf("postgres+rds-iam URL missing host")
+		return nil, errors.New("postgres+rds-iam URL missing host")
 	}
 
 	port := u.Port()
@@ -247,7 +248,7 @@ func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL) (Con
 	}
 
 	if awsCfg.Region == "" {
-		return nil, fmt.Errorf("AWS region is not configured")
+		return nil, errors.New("AWS region is not configured")
 	}
 
 	creds := awsCfg.Credentials

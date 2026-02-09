@@ -3,6 +3,7 @@ package pgutils
 import (
 	"crypto/sha1"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -127,4 +128,15 @@ func getCanonicalFormat(s string) string {
 	re = regexp.MustCompile(`\s*=\s*`)
 	str = re.ReplaceAllString(str, "=")
 	return str
+}
+
+func CensorDSN(dsn string) (string, error) {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "", fmt.Errorf("Error parsing url: %w", err)
+	}
+	if u.User != nil {
+		u.User = url.UserPassword(u.User.Username(), "xxx")
+	}
+	return u.String(), nil
 }
