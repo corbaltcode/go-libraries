@@ -53,9 +53,9 @@ func (f connectionStringProviderFunc) ConnectionString(ctx context.Context) (str
 //
 // For postgres+rds-iam, the provider generates a fresh IAM auth token on each ConnectionString(ctx) call.
 func NewConnectionStringProviderFromURLString(ctx context.Context, rawURL string) (ConnectionStringProvider, error) {
-	u, err := parseURL(rawURL)
+	u, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parsing URL: %w", err)
 	}
 
 	switch u.Scheme {
@@ -112,21 +112,10 @@ func MustConnectDB(conn driver.Connector) *sqlx.DB {
 	return db
 }
 
-func parseURL(rawURL string) (*url.URL, error) {
-	if strings.TrimSpace(rawURL) == "" {
-		return nil, errors.New("rawURL cannot be empty")
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return nil, fmt.Errorf("parsing URL: %w", err)
-	}
-	return u, nil
-}
-
 // addSearchPathToURL returns a copy of u with search_path set in the query string.
 // It returns an error if search_path is already present.
 func addSearchPathToURL(rawURL string, searchPath string) (string, error) {
-	u, err := parseURL(rawURL)
+	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", fmt.Errorf("url string failed to parse while adding search path: %w", err)
 	}
