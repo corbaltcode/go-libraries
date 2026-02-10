@@ -58,16 +58,13 @@ func NewConnectionStringProviderFromURLString(ctx context.Context, rawURL string
 		return nil, err
 	}
 
-	if u.Scheme == "" {
-		return nil, errors.New("URL scheme is required (expected postgres, postgresql, or postgres+rds-iam)")
-	}
 	switch u.Scheme {
 	case "postgres", "postgresql":
 		return &staticConnectionStringProvider{connectionString: u.String()}, nil
 	case "postgres+rds-iam":
 		return newIAMConnectionStringProviderFromURL(ctx, u)
 	default:
-		return nil, fmt.Errorf("unsupported URL scheme: %s", u.Scheme)
+		return nil, fmt.Errorf("unsupported URL scheme: %q (expected postgres, postgresql, or postgres+rds-iam)", u.Scheme)
 	}
 }
 
@@ -135,18 +132,16 @@ func addSearchPathToURL(rawURL string, searchPath string) (string, error) {
 	}
 
 	if searchPath == "" {
-		uCopy := *u
-		return uCopy.String(), nil
+		return u.String(), nil
 	}
 
-	uCopy := *u
-	q := uCopy.Query()
+	q := u.Query()
 	if v := q.Get("search_path"); v != "" {
 		return "", fmt.Errorf("search_path already set to %q", v)
 	}
 	q.Set("search_path", searchPath)
-	uCopy.RawQuery = q.Encode()
-	return uCopy.String(), nil
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 type postgresqlConnector struct {

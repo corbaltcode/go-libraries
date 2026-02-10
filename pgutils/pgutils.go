@@ -130,13 +130,13 @@ func getCanonicalFormat(s string) string {
 	return str
 }
 
-func CensorDSN(dsn string) (string, error) {
+func CensorDSNForLogs(dsn string) string {
 	u, err := url.Parse(dsn)
 	if err != nil {
-		return "", fmt.Errorf("Error parsing url: %w", err)
+		return "<failed to parse URL to censor>"
 	}
 	if u.User != nil {
 		u.User = url.UserPassword(u.User.Username(), "xxx")
 	}
-	return u.String(), nil
+	return u.String()
 }
