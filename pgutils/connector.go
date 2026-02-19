@@ -41,15 +41,15 @@ func (f connectionStringProviderFunc) ConnectionString(ctx context.Context) (str
 //
 // Standard Postgres example:
 //
-//	postgres://user:pass@host:5432/dbname?sslmode=require
+//	postgres://<user>:<pass>@<host>:<port>/<db-name>?sslmode=require
 //
 // IAM example 1:
 //
-//	postgres+rds-iam://user@host:5432/dbname
+//	postgres+rds-iam://<user>@<rds-endpoint>:<port>/<db-name>
 //
 // IAM example 2 (cross-account):
 //
-//	postgres+rds-iam://user@host:5432/dbname?assume_role_arn=...&assume_role_session_name=...
+//	postgres+rds-iam://<user>@<rds-endpoint>:<port>/<db-name>?assume_role_arn=<...>&assume_role_session_name=<...>
 //
 // For postgres+rds-iam, the provider generates a fresh IAM auth token on each ConnectionString(ctx) call.
 func NewConnectionStringProviderFromURLString(ctx context.Context, rawURL string) (ConnectionStringProvider, error) {
