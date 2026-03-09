@@ -1,16 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
-	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 
@@ -20,45 +21,42 @@ import (
 	"github.com/corbaltcode/go-libraries/pgutils"
 )
 
+const usageTemplate = `Usage:
+  %[2]s [-search-path "login,public"] [-debug-aws] 'postgres+rds-iam://myuser@mydb.abc123.us-east-1.rds.amazonaws.com:5432/mydb'
+
+Notes:
+  Flags must come before the DSN (standard Go flag parsing).
+  Database path is optional. If omitted, the database name defaults to the username.
+
+Flags:
+%[1]s
+
+Examples:
+  %[2]s 'postgres+rds-iam://myuser@mydb.abc123.us-east-1.rds.amazonaws.com:5432/mydb'
+  %[2]s -search-path "login,public" 'postgres+rds-iam://myuser@mydb.abc123.us-east-1.rds.amazonaws.com:5432'
+  %[2]s -debug-aws 'postgres+rds-iam://myuser@mydb.abc123.us-east-1.rds.amazonaws.com:5432/mydb'
+`
+
 func main() {
-	var (
-		host       = flag.String("host", "", "RDS PostgreSQL endpoint hostname (no port, e.g. mydb.abc123.us-east-1.rds.amazonaws.com)")
-		port       = flag.Int("port", 5432, "RDS PostgreSQL port (default 5432)")
-		user       = flag.String("user", "", "Database user name")
-		dbName     = flag.String("db", "", "Database name")
-		psqlPath   = flag.String("psql", "psql", "Path to psql binary")
-		sslMode    = flag.String("sslmode", "require", "PGSSLMODE for psql (e.g. require, verify-full)")
-		searchPath = flag.String("search-path", "", "Optional PostgreSQL search_path to set (e.g. 'myschema,public')")
-	)
-	flag.Parse()
-
-	args := flag.Args()
-	if len(args) > 1 {
-		log.Fatalf("expected at most one positional connection URL argument, got %d", len(args))
-	}
-
-	connectionURLArg := ""
-	if len(args) == 1 {
-		connectionURLArg = args[0]
-	}
-
-	rawURL, usesIAM, err := buildRawURL(connectionURLArg, *host, *port, *user, *dbName)
+	rawURL, searchPath, debugAWS, err := parseCLIArgs(os.Args[1:], os.Args[0])
 	if err != nil {
-		log.Fatalf("%v\n\nUsage examples:\n  %s -host mydb.abc123.us-east-1.rds.amazonaws.com -port 5432 -user myuser -db mydb -search-path \"login,public\"\n  %s 'postgres+rds-iam://myuser@mydb.abc123.us-east-1.rds.amazonaws.com:5432/mydb'\n", err, os.Args[0], os.Args[0])
+		if errors.Is(err, flag.ErrHelp) {
+			printUsage(os.Stdout, os.Args[0])
+			return
+		}
+		fmt.Fprintf(os.Stderr, "%v\n\n", err)
+		printUsage(os.Stderr, os.Args[0])
+		os.Exit(2)
+	}
+
+	if err := validateRDSIAMURL(rawURL); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(2)
 	}
 
 	ctx := context.Background()
 
-	connectionStringProvider, err := pgutils.NewConnectionStringProviderFromURLString(ctx, rawURL)
-	if err != nil {
-		log.Fatalf("failed to create connection string provider: %v", err)
-	}
-
-	if usesIAM {
-		if os.Getenv("AWS_REGION") == "" {
-			log.Fatalf("AWS_REGION must be set for IAM auth")
-		}
-
+	if debugAWS {
 		cfg, err := awsconfig.LoadDefaultConfig(ctx)
 		if err != nil {
 			log.Fatalf("failed to load AWS config: %v", err)
@@ -66,6 +64,11 @@ func main() {
 		if err := printCallerIdentity(ctx, cfg); err != nil {
 			log.Fatalf("AWS credentials check failed: %v", err)
 		}
+	}
+
+	connectionStringProvider, err := pgutils.NewConnectionStringProviderFromURLString(ctx, rawURL)
+	if err != nil {
+		log.Fatalf("failed to create connection string provider: %v", err)
 	}
 
 	dsnWithToken, err := connectionStringProvider.ConnectionString(ctx)
@@ -78,6 +81,11 @@ func main() {
 		log.Fatalf("failed to parse connection string from provider: %v", err)
 	}
 
+	if err := addSearchPathToPSQLURL(parsedURL, searchPath); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(2)
+	}
+
 	password := ""
 	if parsedURL.User != nil {
 		var ok bool
@@ -88,7 +96,7 @@ func main() {
 	}
 
 	// Pass DSN to psql without password in argv, and provide password via env.
-	cmd := exec.Command(*psqlPath, parsedURL.String())
+	cmd := exec.Command("psql", parsedURL.String())
 
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -97,28 +105,6 @@ func main() {
 	env := os.Environ()
 	if password != "" {
 		env = append(env, "PGPASSWORD="+password)
-	}
-	env = append(env, "PGSSLMODE="+*sslMode)
-
-	if sp := strings.TrimSpace(*searchPath); sp != "" {
-		add := "-c search_path=" + sp
-
-		found := false
-		for i, e := range env {
-			if strings.HasPrefix(e, "PGOPTIONS=") {
-				current := strings.TrimPrefix(e, "PGOPTIONS=")
-				if strings.TrimSpace(current) == "" {
-					env[i] = "PGOPTIONS=" + add
-				} else {
-					env[i] = "PGOPTIONS=" + current + " " + add
-				}
-				found = true
-				break
-			}
-		}
-		if !found {
-			env = append(env, "PGOPTIONS="+add)
-		}
 	}
 
 	cmd.Env = env
@@ -159,39 +145,100 @@ func main() {
 	}
 }
 
-func buildRawURL(connectionURLArg, host string, port int, user, dbName string) (string, bool, error) {
-	if connectionURLArg != "" {
-		if host != "" || user != "" || dbName != "" || port != 5432 {
-			return "", false, fmt.Errorf("positional connection URL cannot be combined with -host, -port, -user, or -db")
-		}
-		parsedURL, err := url.Parse(connectionURLArg)
-		if err != nil {
-			return "", false, fmt.Errorf("failed to parse positional connection URL: %w", err)
-		}
-		switch parsedURL.Scheme {
-		case "postgres+rds-iam":
-			return connectionURLArg, true, nil
-		case "postgres", "postgresql":
-			return connectionURLArg, false, nil
-		default:
-			return "", false, fmt.Errorf("unsupported connection URL scheme %q (expected postgres, postgresql, or postgres+rds-iam)", parsedURL.Scheme)
+func newFlagSet(bin string, output io.Writer) (fs *flag.FlagSet, searchPathFlag *string, debugAWSFlag *bool) {
+	fs = flag.NewFlagSet(bin, flag.ContinueOnError)
+	fs.SetOutput(output)
+
+	return fs,
+		fs.String("search-path", "", "Optional PostgreSQL search_path to set (e.g. 'myschema,public')"),
+		fs.Bool("debug-aws", false, "Print AWS caller identity before connecting")
+}
+
+func printUsage(output io.Writer, bin string) {
+	fs, _, _ := newFlagSet(bin, io.Discard)
+
+	var defaults bytes.Buffer
+	fs.SetOutput(&defaults)
+	fs.PrintDefaults()
+
+	fmt.Fprintf(output, usageTemplate, strings.TrimRight(defaults.String(), "\n"), bin)
+}
+
+func parseCLIArgs(args []string, bin string) (rawURL string, searchPath string, debugAWS bool, err error) {
+	fs, searchPathFlag, debugAWSFlag := newFlagSet(bin, io.Discard)
+
+	if err := fs.Parse(args); err != nil {
+		return "", "", false, err
+	}
+
+	positionals := fs.Args()
+	if len(positionals) != 1 {
+		return "", "", false, fmt.Errorf("expected exactly one positional RDS IAM connection URL argument, got %d", len(positionals))
+	}
+
+	return positionals[0], *searchPathFlag, *debugAWSFlag, nil
+}
+
+func addSearchPathToPSQLURL(u *url.URL, searchPath string) error {
+	normalized, err := normalizeSearchPath(searchPath)
+	if err != nil {
+		return err
+	}
+	if normalized == "" {
+		return nil
+	}
+
+	query := u.Query()
+	add := "-csearch_path=" + normalized
+
+	existing := strings.TrimSpace(query.Get("options"))
+	if existing == "" {
+		query.Set("options", add)
+	} else {
+		query.Set("options", existing+" "+add)
+	}
+
+	u.RawQuery = query.Encode()
+	return nil
+}
+
+func normalizeSearchPath(searchPath string) (string, error) {
+	if strings.TrimSpace(searchPath) == "" {
+		return "", nil
+	}
+
+	parts := strings.Split(searchPath, ",")
+	cleaned := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			cleaned = append(cleaned, p)
 		}
 	}
 
-	if host == "" || user == "" || dbName == "" {
-		return "", false, fmt.Errorf("host, user, and db are required when no positional connection URL is provided")
-	}
-	if port <= 0 {
-		return "", false, fmt.Errorf("invalid port: %d", port)
+	if len(cleaned) == 0 {
+		return "", fmt.Errorf("search path cannot be empty")
 	}
 
-	iamURL := &url.URL{
-		Scheme: "postgres+rds-iam",
-		User:   url.User(user),
-		Host:   net.JoinHostPort(host, strconv.Itoa(port)),
-		Path:   "/" + dbName,
+	return strings.Join(cleaned, ","), nil
+}
+
+func validateRDSIAMURL(rawURL string) error {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("failed to parse positional connection URL: %w", err)
 	}
-	return iamURL.String(), true, nil
+	if parsedURL.Scheme != "postgres+rds-iam" {
+		return fmt.Errorf("unsupported connection URL scheme %q (expected postgres+rds-iam)", parsedURL.Scheme)
+	}
+	if parsedURL.User == nil || strings.TrimSpace(parsedURL.User.Username()) == "" {
+		return fmt.Errorf("connection URL must include a database username")
+	}
+	if strings.TrimSpace(parsedURL.Host) == "" {
+		return fmt.Errorf("connection URL must include a database host")
+	}
+
+	return nil
 }
 
 func printCallerIdentity(ctx context.Context, cfg aws.Config) error {

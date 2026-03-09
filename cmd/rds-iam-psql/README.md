@@ -1,10 +1,9 @@
 # rds-iam-psql
 
-A CLI that launches an interactive `psql` session from either:
-- a positional connection URL, or
-- individual `-host/-port/-user/-db` flags.
-
-It supports standard PostgreSQL URLs and `pgutils` custom IAM URLs (`postgres+rds-iam://...`).
+A CLI that launches an interactive `psql` session from a required RDS IAM URL:
+- positional `postgres+rds-iam://...` DSN
+- optional `-search-path` flag
+- optional `-debug-aws` flag
 
 ## Why?
 
@@ -26,43 +25,30 @@ go build
 ## Prerequisites
 
 - **psql** installed and available in your PATH
-- For IAM URLs (`postgres+rds-iam://...`), **AWS credentials** configured (env vars, `~/.aws/credentials`, IAM role, etc.)
-- For IAM URLs (`postgres+rds-iam://...`), **AWS_REGION** set
-- For IAM URLs (`postgres+rds-iam://...`), **RDS IAM authentication enabled** on your database instance
-- For IAM URLs (`postgres+rds-iam://...`), a DB user configured for IAM auth (for example: `CREATE USER myuser WITH LOGIN; GRANT rds_iam TO myuser;`)
+- **AWS credentials** configured (env vars, `~/.aws/credentials`, IAM role, etc.)
+- **AWS region** configured for SDK resolution (for example: `AWS_REGION`, shared config profile, or runtime role config)
+- **RDS IAM authentication enabled** on your database instance
+- A DB user configured for IAM auth (for example: `CREATE USER myuser WITH LOGIN; GRANT rds_iam TO myuser;`)
 
 ## Usage
 
 ```bash
-rds-iam-psql [connection-url] [options]
+rds-iam-psql [-search-path "schema,public"] [-debug-aws] '<postgres+rds-iam-url>'
 ```
 
-```bash
-rds-iam-psql -host <endpoint> -user <db-user> -db <database-name> [options]
-```
-
-`connection-url` supports:
-- `postgres+rds-iam://user@host:5432/dbname`
-- `postgres://user:pass@host:5432/dbname?...`
-- `postgresql://user:pass@host:5432/dbname?...`
-
-If `connection-url` is provided, do not combine it with `-host/-port/-user/-db`.
+- Flags must come before the DSN (standard Go flag parsing behavior).
+- `<postgres+rds-iam-url>` may omit the database path. When omitted, `pgutils` defaults the database name to the username.
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-host` | | Endpoint hostname (required if `connection-url` is not provided) |
-| `-port` | `5432` | PostgreSQL port |
-| `-user` | | DB username (required if `connection-url` is not provided) |
-| `-db` | | DB name (required if `connection-url` is not provided) |
-| `-psql` | `psql` | Path to the `psql` binary |
-| `-sslmode` | `require` | SSL mode (`require`, `verify-full`, etc.) |
 | `-search-path` | | PostgreSQL `search_path` to set on connection (e.g. `myschema,public`) |
+| `-debug-aws` | `false` | Print STS caller identity before connecting |
 
 ## Examples
 
-Positional IAM URL (your requested form):
+Basic IAM URL:
 
 ```bash
 ./rds-iam-psql 'postgres+rds-iam://server@acremins-test.cicxifnkufnd.us-east-1.rds.amazonaws.com:5432/postgres'
@@ -74,37 +60,34 @@ IAM URL with cross-account role assumption:
 rds-iam-psql 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp?assume_role_arn=arn:aws:iam::123456789012:role/db-connect&assume_role_session_name=rds-iam-psql'
 ```
 
-Flag-based IAM connection:
-
-```bash
-rds-iam-psql -host mydb.abc123.us-east-1.rds.amazonaws.com -user app_user -db myapp
-```
-
-Standard PostgreSQL URL (non-IAM):
-
-```bash
-rds-iam-psql 'postgresql://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable'
-```
-
 With search path:
 
 ```bash
 rds-iam-psql \
-  -host mydb.abc123.us-east-1.rds.amazonaws.com \
-  -user app_user \
-  -db myapp \
-  -search-path "app_schema,public"
+  -search-path "app_schema,public" \
+  'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp'
+```
+
+With AWS identity debugging:
+
+```bash
+rds-iam-psql -debug-aws 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp'
+```
+
+Without explicit database name (defaults to username):
+
+```bash
+rds-iam-psql 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432'
 ```
 
 ## How It Works
 
-1. Parses input from either positional URL or `-host/-port/-user/-db`.
-2. Builds a `pgutils.ConnectionStringProvider` from the URL.
-3. For IAM URLs, validates AWS auth context (including `AWS_REGION`).
-4. Resolves a DSN from the provider and launches `psql` with:
-- `PGPASSWORD` set from the URL password/token
-- `PGSSLMODE` set from `-sslmode`
-- `PGOPTIONS` set when `-search-path` is provided
+1. Parses and validates the positional IAM URL.
+2. Builds a `pgutils` connection string provider from the IAM URL.
+3. If `-search-path` is set, adds libpq `options=-csearch_path=...` to the connection URI before launching `psql`.
+4. If `-debug-aws` is set, runs STS `GetCallerIdentity` and prints the caller ARN.
+5. Resolves an IAM tokenized DSN from the provider and launches `psql` with:
+- `PGPASSWORD` set from the generated token
 
 ## Setting Up IAM Auth on RDS
 
