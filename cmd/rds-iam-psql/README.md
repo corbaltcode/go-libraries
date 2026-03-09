@@ -2,7 +2,6 @@
 
 A CLI that launches an interactive `psql` session from a required RDS IAM URL:
 - positional `postgres+rds-iam://...` DSN
-- optional `-search-path` flag
 - optional `-debug-aws` flag
 
 ## Why?
@@ -33,7 +32,7 @@ go build
 ## Usage
 
 ```bash
-rds-iam-psql [-search-path "schema,public"] [-debug-aws] '<postgres+rds-iam-url>'
+rds-iam-psql [-debug-aws] '<postgres+rds-iam-url>'
 ```
 
 - Flags must come before the DSN (standard Go flag parsing behavior).
@@ -43,7 +42,6 @@ rds-iam-psql [-search-path "schema,public"] [-debug-aws] '<postgres+rds-iam-url>
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-search-path` | | PostgreSQL `search_path` to set on connection (e.g. `myschema,public`) |
 | `-debug-aws` | `false` | Print STS caller identity before connecting |
 
 ## Examples
@@ -60,14 +58,6 @@ IAM URL with cross-account role assumption:
 rds-iam-psql 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp?assume_role_arn=arn:aws:iam::123456789012:role/db-connect&assume_role_session_name=rds-iam-psql'
 ```
 
-With search path:
-
-```bash
-rds-iam-psql \
-  -search-path "app_schema,public" \
-  'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp'
-```
-
 With AWS identity debugging:
 
 ```bash
@@ -80,13 +70,23 @@ Without explicit database name (defaults to username):
 rds-iam-psql 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432'
 ```
 
+## Changing Search Path In psql
+
+If you need to change the schema search path, do it from the interactive `psql` session after connecting:
+
+```sql
+SHOW search_path;
+SET search_path TO app_schema, public;
+```
+
+This applies to the current session. If you need a persistent default, configure it in Postgres (for example with `ALTER ROLE ... SET search_path ...`).
+
 ## How It Works
 
 1. Parses and validates the positional IAM URL.
 2. Builds a `pgutils` connection string provider from the IAM URL.
-3. If `-search-path` is set, adds libpq `options=-csearch_path=...` to the connection URI before launching `psql`.
-4. If `-debug-aws` is set, runs STS `GetCallerIdentity` and prints the caller ARN.
-5. Resolves an IAM tokenized DSN from the provider and launches `psql` with:
+3. If `-debug-aws` is set, runs STS `GetCallerIdentity` and prints the caller ARN.
+4. Resolves an IAM tokenized DSN from the provider and launches `psql` with:
 - `PGPASSWORD` set from the generated token
 
 ## Setting Up IAM Auth on RDS
