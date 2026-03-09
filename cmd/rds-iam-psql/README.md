@@ -86,8 +86,7 @@ This applies to the current session. If you need a persistent default, configure
 1. Parses and validates the positional IAM URL.
 2. Builds a `pgutils` connection string provider from the IAM URL.
 3. If `-debug-aws` is set, runs STS `GetCallerIdentity` and prints the caller ARN.
-4. Resolves an IAM tokenized DSN from the provider and launches `psql` with:
-- `PGPASSWORD` set from the generated token
+4. Resolves an IAM tokenized DSN from the provider and launches `psql` with the IAM generated connection string.
 
 ## Setting Up IAM Auth on RDS
 
