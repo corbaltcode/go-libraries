@@ -22,7 +22,7 @@ import (
 )
 
 const usageTemplate = `Usage:
-  %[2]s [-search-path "login,public"] [-debug-aws] 'postgres+rds-iam://myuser@mydb.abc123.us-east-1.rds.amazonaws.com:5432/mydb'
+  %[2]s [-debug-aws] 'postgres+rds-iam://myuser@mydb.abc123.us-east-1.rds.amazonaws.com:5432/mydb'
 
 Notes:
   Flags must come before the DSN (standard Go flag parsing).
@@ -33,12 +33,11 @@ Flags:
 
 Examples:
   %[2]s 'postgres+rds-iam://myuser@mydb.abc123.us-east-1.rds.amazonaws.com:5432/mydb'
-  %[2]s -search-path "login,public" 'postgres+rds-iam://myuser@mydb.abc123.us-east-1.rds.amazonaws.com:5432'
   %[2]s -debug-aws 'postgres+rds-iam://myuser@mydb.abc123.us-east-1.rds.amazonaws.com:5432/mydb'
 `
 
 func main() {
-	rawURL, searchPath, debugAWS, err := parseCLIArgs(os.Args[1:], os.Args[0])
+	rawURL, debugAWS, err := parseCLIArgs(os.Args[1:], os.Args[0])
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printUsage(os.Stdout, os.Args[0])
@@ -76,41 +75,14 @@ func main() {
 		log.Fatalf("failed to get connection string from provider: %v", err)
 	}
 
-	parsedURL, err := url.Parse(dsnWithToken)
-	if err != nil {
-		log.Fatalf("failed to parse connection string from provider: %v", err)
-	}
-
-	if err := addSearchPathToPSQLURL(parsedURL, searchPath); err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(2)
-	}
-
-	password := ""
-	if parsedURL.User != nil {
-		var ok bool
-		password, ok = parsedURL.User.Password()
-		if ok {
-			parsedURL.User = url.User(parsedURL.User.Username())
-		}
-	}
-
-	// Pass DSN to psql without password in argv, and provide password via env.
-	cmd := exec.Command("psql", parsedURL.String())
+	cmd := exec.Command("psql", dsnWithToken)
 
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	env := os.Environ()
-	if password != "" {
-		env = append(env, "PGPASSWORD="+password)
-	}
-
-	cmd.Env = env
-
-	// Keep psql in the foreground process group. Swallow SIGINT in wrapper so
-	// psql handles Ctrl-C directly.
+	// Ignore SIGINT in the wrapper so interactive Ctrl-C can be handled by psql.
+	// Forward SIGTERM to the child process.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
@@ -145,17 +117,16 @@ func main() {
 	}
 }
 
-func newFlagSet(bin string, output io.Writer) (fs *flag.FlagSet, searchPathFlag *string, debugAWSFlag *bool) {
+func newFlagSet(bin string, output io.Writer) (fs *flag.FlagSet, debugAWSFlag *bool) {
 	fs = flag.NewFlagSet(bin, flag.ContinueOnError)
 	fs.SetOutput(output)
 
 	return fs,
-		fs.String("search-path", "", "Optional PostgreSQL search_path to set (e.g. 'myschema,public')"),
 		fs.Bool("debug-aws", false, "Print AWS caller identity before connecting")
 }
 
 func printUsage(output io.Writer, bin string) {
-	fs, _, _ := newFlagSet(bin, io.Discard)
+	fs, _ := newFlagSet(bin, io.Discard)
 
 	var defaults bytes.Buffer
 	fs.SetOutput(&defaults)
@@ -164,63 +135,19 @@ func printUsage(output io.Writer, bin string) {
 	fmt.Fprintf(output, usageTemplate, strings.TrimRight(defaults.String(), "\n"), bin)
 }
 
-func parseCLIArgs(args []string, bin string) (rawURL string, searchPath string, debugAWS bool, err error) {
-	fs, searchPathFlag, debugAWSFlag := newFlagSet(bin, io.Discard)
+func parseCLIArgs(args []string, bin string) (rawURL string, debugAWS bool, err error) {
+	fs, debugAWSFlag := newFlagSet(bin, io.Discard)
 
 	if err := fs.Parse(args); err != nil {
-		return "", "", false, err
+		return "", false, err
 	}
 
 	positionals := fs.Args()
 	if len(positionals) != 1 {
-		return "", "", false, fmt.Errorf("expected exactly one positional RDS IAM connection URL argument, got %d", len(positionals))
+		return "", false, fmt.Errorf("expected exactly one positional RDS IAM connection URL argument, got %d", len(positionals))
 	}
 
-	return positionals[0], *searchPathFlag, *debugAWSFlag, nil
-}
-
-func addSearchPathToPSQLURL(u *url.URL, searchPath string) error {
-	normalized, err := normalizeSearchPath(searchPath)
-	if err != nil {
-		return err
-	}
-	if normalized == "" {
-		return nil
-	}
-
-	query := u.Query()
-	add := "-csearch_path=" + normalized
-
-	existing := strings.TrimSpace(query.Get("options"))
-	if existing == "" {
-		query.Set("options", add)
-	} else {
-		query.Set("options", existing+" "+add)
-	}
-
-	u.RawQuery = query.Encode()
-	return nil
-}
-
-func normalizeSearchPath(searchPath string) (string, error) {
-	if strings.TrimSpace(searchPath) == "" {
-		return "", nil
-	}
-
-	parts := strings.Split(searchPath, ",")
-	cleaned := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			cleaned = append(cleaned, p)
-		}
-	}
-
-	if len(cleaned) == 0 {
-		return "", fmt.Errorf("search path cannot be empty")
-	}
-
-	return strings.Join(cleaned, ","), nil
+	return positionals[0], *debugAWSFlag, nil
 }
 
 func validateRDSIAMURL(rawURL string) error {
@@ -233,6 +160,9 @@ func validateRDSIAMURL(rawURL string) error {
 	}
 	if parsedURL.User == nil || strings.TrimSpace(parsedURL.User.Username()) == "" {
 		return fmt.Errorf("connection URL must include a database username")
+	}
+	if _, ok := parsedURL.User.Password(); ok {
+		return fmt.Errorf("connection URL must not include a password for postgres+rds-iam")
 	}
 	if strings.TrimSpace(parsedURL.Host) == "" {
 		return fmt.Errorf("connection URL must include a database host")
@@ -249,6 +179,6 @@ func printCallerIdentity(ctx context.Context, cfg aws.Config) error {
 		return fmt.Errorf("STS GetCallerIdentity failed (creds invalid/expired or STS not allowed): %w", err)
 	}
 
-	fmt.Printf("Caller ARN:  %s\n", aws.ToString(out.Arn))
+	fmt.Fprintf(os.Stderr, "Caller ARN: %s\n", aws.ToString(out.Arn))
 	return nil
 }
