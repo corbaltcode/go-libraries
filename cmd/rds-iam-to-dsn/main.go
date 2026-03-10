@@ -24,8 +24,8 @@ func main() {
 
 	ctx := context.Background()
 
-	restoreLogger := suppressStdLogger()
-	defer restoreLogger()
+	// Suppress package-level info logs from pgutils so stdout only contains the DSN.
+	log.SetOutput(io.Discard)
 
 	connectionStringProvider, err := pgutils.NewConnectionStringProviderFromURLString(ctx, rawURL)
 	if err != nil {
@@ -41,20 +41,4 @@ func main() {
 
 	// Print only the final DSN to stdout for command-substitution in scripts.
 	fmt.Fprintln(os.Stdout, dsnWithToken)
-}
-
-func suppressStdLogger() func() {
-	prevOutput := log.Writer()
-	prevFlags := log.Flags()
-	prevPrefix := log.Prefix()
-
-	log.SetOutput(io.Discard)
-	log.SetFlags(0)
-	log.SetPrefix("")
-
-	return func() {
-		log.SetOutput(prevOutput)
-		log.SetFlags(prevFlags)
-		log.SetPrefix(prevPrefix)
-	}
 }

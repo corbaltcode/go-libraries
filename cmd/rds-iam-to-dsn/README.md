@@ -67,6 +67,19 @@ Cross-account role assumption:
 rds-iam-dsn 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp?assume_role_arn=arn:aws:iam::123456789012:role/db-connect&assume_role_session_name=rds-iam-dsn'
 ```
 
+## Troubleshooting
+
+`PAM authentication failed for user "<user>"`
+
+- This indicates IAM database authentication failed, but the message itself is not specific.
+- Check RDS IAM auth error logs in CloudWatch:
+  `/aws/rds/instance/<db-instance-identifier>/iam-db-auth-error`
+
+`pg_hba.conf rejects connection for host "...", user "...", database "...", no encryption`
+
+- This usually means the connection attempt was not encrypted.
+- In MAC-FC, RDS parameter groups should enforce SSL. If this appears, verify the endpoint, user, and DSN being used.
+
 ## Notes
 
 - IAM auth tokens are short-lived (typically 15 minutes). Generate DSNs close to use time.
