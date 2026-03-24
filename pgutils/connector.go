@@ -33,10 +33,10 @@ type TokenSignEvent struct {
 	AssumeRoleSessionName string // empty if no role assumption was configured
 }
 
-// OnTokenSign is called each time an RDS IAM auth token is generated.
-// Clients can use this for logging, metrics, or any other observability needs.
-// Pass nil to disable notifications.
-type OnTokenSign func(event TokenSignEvent)
+// OnTokenSign is called synchronously after an RDS IAM auth token is generated.
+// Because it runs on the ConnectionString path, implementations should keep
+// their work lightweight. Pass nil to disable notifications.
+type OnTokenSign func(ctx context.Context, event TokenSignEvent)
 
 // ConnectionStringProvider returns a Postgres connection string for use by clients
 // that need a DSN (e.g., pq.Listener) or to build a connector.
@@ -65,7 +65,8 @@ func (f connectionStringProviderFunc) ConnectionString(ctx context.Context) (str
 //	postgres+rds-iam://<user>@<rds-endpoint>:<port>/<db-name>?assume_role_arn=<...>&assume_role_session_name=<...>
 //
 // For postgres+rds-iam, the provider generates a fresh IAM auth token on each
-// ConnectionString(ctx) call and fires onTokenSign (if non-nil) after each signing.
+// ConnectionString(ctx) call and fires onTokenSign (if non-nil) synchronously
+// after each successful signing.
 func NewConnectionStringProviderFromURLString(ctx context.Context, rawURL string, onTokenSign OnTokenSign) (ConnectionStringProvider, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -194,7 +195,7 @@ func (p *rdsIAMConnectionStringProvider) ConnectionString(ctx context.Context) (
 	}
 
 	if p.OnTokenSign != nil {
-		p.OnTokenSign(TokenSignEvent{
+		p.OnTokenSign(ctx, TokenSignEvent{
 			Endpoint:              p.RDSEndpoint,
 			User:                  p.User,
 			Database:              p.Database,
@@ -263,9 +264,10 @@ func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL, onTo
 
 	creds := awsCfg.Credentials
 	assumeRoleARN := q.Get("assume_role_arn")
-	sessionName := q.Get("assume_role_session_name")
+	var sessionName string
 	if assumeRoleARN != "" {
 		stsClient := sts.NewFromConfig(awsCfg)
+		sessionName = q.Get("assume_role_session_name")
 		if sessionName == "" {
 			sessionName = "pgutils-rds-iam"
 		}

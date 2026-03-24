@@ -150,9 +150,9 @@ func CensorDSNForLogs(dsn string) string {
 // ChainOnTokenSign combines multiple OnTokenSign callbacks into one.
 // Each callback is invoked in order for every event.
 func ChainOnTokenSign(callbacks ...OnTokenSign) OnTokenSign {
-	return func(event TokenSignEvent) {
+	return func(ctx context.Context, event TokenSignEvent) {
 		for _, cb := range callbacks {
-			cb(event)
+			cb(ctx, event)
 		}
 	}
 }
@@ -160,7 +160,7 @@ func ChainOnTokenSign(callbacks ...OnTokenSign) OnTokenSign {
 // LogOnTokenSign returns an OnTokenSign callback that logs each signing
 // event to the provided logger, including assume-role details when present.
 func LogOnTokenSign(logger *log.Logger) OnTokenSign {
-	return func(event TokenSignEvent) {
+	return func(_ context.Context, event TokenSignEvent) {
 		if event.AssumeRoleARN != "" {
 			logger.Printf("pgutils: signing RDS IAM token for Endpoint: %s User: %s Database: %s AssumeRoleARN: %s SessionName: %s",
 				event.Endpoint, event.User, event.Database, event.AssumeRoleARN, event.AssumeRoleSessionName)
@@ -182,7 +182,7 @@ func LogOnTokenSign(logger *log.Logger) OnTokenSign {
 //  2. Aggregate — with no dimensions, for simple alarming across all
 //     combinations without Metric Math.
 func PushCloudWatchOnTokenSign(client *cloudwatch.Client, namespace string, onError func(error)) OnTokenSign {
-	return func(event TokenSignEvent) {
+	return func(ctx context.Context, event TokenSignEvent) {
 		now := time.Now()
 		metricName := aws.String("RDSIAMTokenSigned")
 
@@ -218,7 +218,7 @@ func PushCloudWatchOnTokenSign(client *cloudwatch.Client, namespace string, onEr
 			},
 		}
 
-		if _, err := client.PutMetricData(context.Background(), input); err != nil {
+		if _, err := client.PutMetricData(ctx, input); err != nil {
 			if onError != nil {
 				onError(err)
 			}
