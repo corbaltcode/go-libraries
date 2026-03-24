@@ -1,13 +1,19 @@
 package pgutils
 
 import (
+	"context"
 	"crypto/sha1"
 	"fmt"
+	"log"
 	"net/url"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
@@ -139,4 +145,83 @@ func CensorDSNForLogs(dsn string) string {
 		u.User = url.UserPassword(u.User.Username(), "xxx")
 	}
 	return u.String()
+}
+
+// ChainOnTokenSign combines multiple OnTokenSign callbacks into one.
+// Each callback is invoked in order for every event.
+func ChainOnTokenSign(callbacks ...OnTokenSign) OnTokenSign {
+	return func(event TokenSignEvent) {
+		for _, cb := range callbacks {
+			cb(event)
+		}
+	}
+}
+
+// LogOnTokenSign returns an OnTokenSign callback that logs each signing
+// event to the provided logger, including assume-role details when present.
+func LogOnTokenSign(logger *log.Logger) OnTokenSign {
+	return func(event TokenSignEvent) {
+		if event.AssumeRoleARN != "" {
+			logger.Printf("pgutils: signing RDS IAM token for Endpoint: %s User: %s Database: %s AssumeRoleARN: %s SessionName: %s",
+				event.Endpoint, event.User, event.Database, event.AssumeRoleARN, event.AssumeRoleSessionName)
+		} else {
+			logger.Printf("pgutils: signing RDS IAM token for Endpoint: %s User: %s Database: %s",
+				event.Endpoint, event.User, event.Database)
+		}
+	}
+}
+
+// PushCloudWatchOnTokenSign returns an OnTokenSign callback that pushes
+// RDSIAMTokenSigned metrics to CloudWatch. If the PutMetricData call fails,
+// the error is passed to onError. If onError is nil, failures are silently ignored.
+//
+// Two data points are published per event:
+//
+//  1. Dimensioned — with Endpoint, User, Database (and AssumeRoleARN when
+//     present) for per-combination drill-down.
+//  2. Aggregate — with no dimensions, for simple alarming across all
+//     combinations without Metric Math.
+func PushCloudWatchOnTokenSign(client *cloudwatch.Client, namespace string, onError func(error)) OnTokenSign {
+	return func(event TokenSignEvent) {
+		now := time.Now()
+		metricName := aws.String("RDSIAMTokenSigned")
+
+		dimensions := []types.Dimension{
+			{Name: aws.String("Endpoint"), Value: aws.String(event.Endpoint)},
+			{Name: aws.String("User"), Value: aws.String(event.User)},
+			{Name: aws.String("Database"), Value: aws.String(event.Database)},
+		}
+
+		if event.AssumeRoleARN != "" {
+			dimensions = append(dimensions, types.Dimension{
+				Name:  aws.String("AssumeRoleARN"),
+				Value: aws.String(event.AssumeRoleARN),
+			})
+		}
+
+		input := &cloudwatch.PutMetricDataInput{
+			Namespace: aws.String(namespace),
+			MetricData: []types.MetricDatum{
+				{
+					MetricName: metricName,
+					Dimensions: dimensions,
+					Timestamp:  aws.Time(now),
+					Value:      aws.Float64(1),
+					Unit:       types.StandardUnitCount,
+				},
+				{
+					MetricName: metricName,
+					Timestamp:  aws.Time(now),
+					Value:      aws.Float64(1),
+					Unit:       types.StandardUnitCount,
+				},
+			},
+		}
+
+		if _, err := client.PutMetricData(context.Background(), input); err != nil {
+			if onError != nil {
+				onError(err)
+			}
+		}
+	}
 }
