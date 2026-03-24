@@ -276,13 +276,13 @@ func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL, onTo
 	}
 
 	return &rdsIAMConnectionStringProvider{
-		Region:              awsCfg.Region,
-		RDSEndpoint:         net.JoinHostPort(host, port),
-		User:                user,
-		Database:            dbName,
-		CredentialsProvider: creds,
-		AssumeRoleARN:       assumeRoleARN,
-		//AssumeRoleSessionName: sessionName,
-		OnTokenSign: onTokenSign,
+		Region:                awsCfg.Region,
+		RDSEndpoint:           net.JoinHostPort(host, port),
+		User:                  user,
+		Database:              dbName,
+		CredentialsProvider:   creds,
+		AssumeRoleARN:         assumeRoleARN,
+		AssumeRoleSessionName: sessionName,
+		OnTokenSign:           onTokenSign,
 	}, nil
 }
