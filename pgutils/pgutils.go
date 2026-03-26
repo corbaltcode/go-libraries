@@ -147,16 +147,6 @@ func CensorDSNForLogs(dsn string) string {
 	return u.String()
 }
 
-// ChainOnTokenSign combines multiple OnTokenSign callbacks into one.
-// Each callback is invoked in order for every event.
-func ChainOnTokenSign(callbacks ...OnTokenSign) OnTokenSign {
-	return func(ctx context.Context, event TokenSignEvent) {
-		for _, cb := range callbacks {
-			cb(ctx, event)
-		}
-	}
-}
-
 // LogOnTokenSign returns an OnTokenSign callback that logs each signing
 // event to the provided logger, including assume-role details when present.
 func LogOnTokenSign(logger *log.Logger) OnTokenSign {

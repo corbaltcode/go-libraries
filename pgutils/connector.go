@@ -35,7 +35,7 @@ type TokenSignEvent struct {
 
 // OnTokenSign is called synchronously after an RDS IAM auth token is generated.
 // Because it runs on the ConnectionString path, implementations should keep
-// their work lightweight. Pass nil to disable notifications.
+// their work lightweight. Omit when constructing a provider and notifications are not needed.
 type OnTokenSign func(ctx context.Context, event TokenSignEvent)
 
 // ConnectionStringProvider returns a Postgres connection string for use by clients
@@ -64,10 +64,10 @@ func (f connectionStringProviderFunc) ConnectionString(ctx context.Context) (str
 //
 //	postgres+rds-iam://<user>@<rds-endpoint>:<port>/<db-name>?assume_role_arn=<...>&assume_role_session_name=<...>
 //
-// For postgres+rds-iam, the provider generates a fresh IAM auth token on each
-// ConnectionString(ctx) call and fires onTokenSign (if non-nil) synchronously
-// after each successful signing.
-func NewConnectionStringProviderFromURLString(ctx context.Context, rawURL string, onTokenSign OnTokenSign) (ConnectionStringProvider, error) {
+// For postgres+rds-iam, the provider generates a fresh IAM auth token on
+// each ConnectionString(ctx) call. Any onTokenSign callbacks are invoked
+// synchronously after each successful signing.
+func NewConnectionStringProviderFromURLString(ctx context.Context, rawURL string, onTokenSign ...OnTokenSign) (ConnectionStringProvider, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("parsing URL: %w", err)
@@ -185,7 +185,7 @@ type rdsIAMConnectionStringProvider struct {
 	CredentialsProvider   aws.CredentialsProvider
 	AssumeRoleARN         string
 	AssumeRoleSessionName string
-	OnTokenSign           OnTokenSign
+	OnTokenSign           []OnTokenSign
 }
 
 func (p *rdsIAMConnectionStringProvider) ConnectionString(ctx context.Context) (string, error) {
@@ -194,14 +194,15 @@ func (p *rdsIAMConnectionStringProvider) ConnectionString(ctx context.Context) (
 		return "", fmt.Errorf("building auth token: %w", err)
 	}
 
-	if p.OnTokenSign != nil {
-		p.OnTokenSign(ctx, TokenSignEvent{
-			Endpoint:              p.RDSEndpoint,
-			User:                  p.User,
-			Database:              p.Database,
-			AssumeRoleARN:         p.AssumeRoleARN,
-			AssumeRoleSessionName: p.AssumeRoleSessionName,
-		})
+	event := TokenSignEvent{
+		Endpoint:              p.RDSEndpoint,
+		User:                  p.User,
+		Database:              p.Database,
+		AssumeRoleARN:         p.AssumeRoleARN,
+		AssumeRoleSessionName: p.AssumeRoleSessionName,
+	}
+	for _, callback := range p.OnTokenSign {
+		callback(ctx, event)
 	}
 
 	dsnURL := &url.URL{
@@ -214,7 +215,7 @@ func (p *rdsIAMConnectionStringProvider) ConnectionString(ctx context.Context) (
 	return dsnURL.String(), nil
 }
 
-func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL, onTokenSign OnTokenSign) (ConnectionStringProvider, error) {
+func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL, onTokenSign []OnTokenSign) (ConnectionStringProvider, error) {
 	user := ""
 	if u.User != nil {
 		user = u.User.Username()
