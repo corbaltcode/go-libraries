@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/corbaltcode/go-libraries/pgutils"
 )
@@ -12,10 +13,10 @@ import (
 func main() {
 	log.SetFlags(0) // no timestamps — keep output clean for CLI use
 
-	if len(os.Args) != 2 {
+	if len(os.Args) != 2 || os.Args[1] == "-help" || os.Args[1] == "--help" || os.Args[1] == "-h" {
 		fmt.Fprintf(os.Stderr,
 			"Usage: %s 'postgres+rds-iam://user@host:5432/db'\n",
-			os.Args[0],
+			filepath.Base(os.Args[0]),
 		)
 		os.Exit(2)
 	}
