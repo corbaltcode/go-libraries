@@ -3,37 +3,35 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/corbaltcode/go-libraries/pgutils"
 )
 
 func main() {
+	log.SetFlags(0) // no timestamps — keep output clean for CLI use
+
 	if len(os.Args) != 2 {
-		fmt.Fprintf(
-			os.Stderr,
-			"expected exactly one positional RDS IAM connection URL argument, got %d\nUsage:\n  %s 'postgres+rds-iam://user@host:5432/db'\n",
-			len(os.Args)-1,
+		fmt.Fprintf(os.Stderr,
+			"Usage: %s 'postgres+rds-iam://user@host:5432/db'\n",
 			os.Args[0],
 		)
 		os.Exit(2)
 	}
-	rawURL := os.Args[1]
 
+	rawURL := os.Args[1]
 	ctx := context.Background()
 
 	connectionStringProvider, err := pgutils.NewConnectionStringProviderFromURLString(ctx, rawURL)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create connection string provider: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("failed to create connection string provider: %v", err)
 	}
 
 	dsnWithToken, err := connectionStringProvider.ConnectionString(ctx)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to get connection string from provider: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("failed to get connection string from provider: %v", err)
 	}
 
-	// Print only the final DSN to stdout for command-substitution in scripts.
 	fmt.Println(dsnWithToken)
 }

@@ -1,4 +1,4 @@
-# rds-iam-dsn
+# rds-iam-to-dsn
 
 A CLI that resolves a `postgres+rds-iam://...` URL into a usable tokenized PostgreSQL DSN and prints it to stdout.
 
@@ -7,13 +7,13 @@ Use this when you want to script `psql`, `pg_dump`, or other Postgres tools with
 ## Installation
 
 ```bash
-go install github.com/corbaltcode/go-libraries/cmd/rds-iam-dsn@latest
+go install github.com/corbaltcode/go-libraries/cmd/rds-iam-to-dsn@latest
 ```
 
 Or build from source:
 
 ```bash
-cd ./cmd/rds-iam-dsn
+cd ./cmd/rds-iam-to-dsn
 go build
 ```
 
@@ -27,7 +27,7 @@ go build
 ## Usage
 
 ```bash
-rds-iam-dsn '<postgres+rds-iam-url>'
+rds-iam-to-dsn '<postgres+rds-iam-url>'
 ```
 
 - Database path is optional. If omitted, `pgutils` defaults DB name to the username.
@@ -38,33 +38,33 @@ rds-iam-dsn '<postgres+rds-iam-url>'
 Resolve DSN only:
 
 ```bash
-rds-iam-dsn 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp'
+rds-iam-to-dsn 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp'
 ```
 
 Use with `psql` in a script:
 
 ```bash
-DSN="$(rds-iam-dsn 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp')"
+DSN="$(rds-iam-to-dsn 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp')"
 psql "$DSN"
 ```
 
 Or directly:
 
 ```bash
-psql "$(rds-iam-dsn 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp')"
+psql "$(rds-iam-to-dsn 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp')"
 ```
 
 Use with `pg_dump`:
 
 ```bash
-DSN="$(rds-iam-dsn 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp')"
+DSN="$(rds-iam-to-dsn 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp')"
 pg_dump "$DSN" > myapp.sql
 ```
 
 Cross-account role assumption:
 
 ```bash
-rds-iam-dsn 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp?assume_role_arn=arn:aws:iam::123456789012:role/db-connect&assume_role_session_name=rds-iam-dsn'
+rds-iam-to-dsn 'postgres+rds-iam://app_user@mydb.abc123.us-east-1.rds.amazonaws.com:5432/myapp?assume_role_arn=arn:aws:iam::123456789012:role/db-connect&assume_role_session_name=foo'
 ```
 
 ## Troubleshooting
