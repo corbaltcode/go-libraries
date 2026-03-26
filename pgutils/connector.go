@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/url"
 	"strings"
@@ -24,6 +23,20 @@ import (
 const defaultPostgresPort = "5432"
 
 var pqDriver = &pq.Driver{}
+
+// TokenSignEvent contains details about an RDS IAM token signing operation.
+type TokenSignEvent struct {
+	Endpoint              string
+	User                  string
+	Database              string
+	AssumeRoleARN         string // empty if no role assumption was configured
+	AssumeRoleSessionName string // empty if no role assumption was configured
+}
+
+// OnTokenSign is called synchronously after an RDS IAM auth token is generated.
+// Because it runs on the ConnectionString path, implementations should keep
+// their work lightweight. Omit when constructing a provider and notifications are not needed.
+type OnTokenSign func(ctx context.Context, event TokenSignEvent)
 
 // ConnectionStringProvider returns a Postgres connection string for use by clients
 // that need a DSN (e.g., pq.Listener) or to build a connector.
@@ -51,8 +64,10 @@ func (f connectionStringProviderFunc) ConnectionString(ctx context.Context) (str
 //
 //	postgres+rds-iam://<user>@<rds-endpoint>:<port>/<db-name>?assume_role_arn=<...>&assume_role_session_name=<...>
 //
-// For postgres+rds-iam, the provider generates a fresh IAM auth token on each ConnectionString(ctx) call.
-func NewConnectionStringProviderFromURLString(ctx context.Context, rawURL string) (ConnectionStringProvider, error) {
+// For postgres+rds-iam, the provider generates a fresh IAM auth token on
+// each ConnectionString(ctx) call. Any onTokenSign callbacks are invoked
+// synchronously after each successful signing.
+func NewConnectionStringProviderFromURLString(ctx context.Context, rawURL string, onTokenSign ...OnTokenSign) (ConnectionStringProvider, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("parsing URL: %w", err)
@@ -62,7 +77,7 @@ func NewConnectionStringProviderFromURLString(ctx context.Context, rawURL string
 	case "postgres", "postgresql":
 		return &staticConnectionStringProvider{connectionString: u.String()}, nil
 	case "postgres+rds-iam":
-		return newIAMConnectionStringProviderFromURL(ctx, u)
+		return newIAMConnectionStringProviderFromURL(ctx, u, onTokenSign)
 	default:
 		return nil, fmt.Errorf("unsupported URL scheme: %q (expected postgres, postgresql, or postgres+rds-iam)", u.Scheme)
 	}
@@ -163,11 +178,14 @@ func (p *staticConnectionStringProvider) ConnectionString(ctx context.Context) (
 }
 
 type rdsIAMConnectionStringProvider struct {
-	RDSEndpoint         string
-	Region              string
-	User                string
-	Database            string
-	CredentialsProvider aws.CredentialsProvider
+	RDSEndpoint           string
+	Region                string
+	User                  string
+	Database              string
+	CredentialsProvider   aws.CredentialsProvider
+	AssumeRoleARN         string
+	AssumeRoleSessionName string
+	OnTokenSign           []OnTokenSign
 }
 
 func (p *rdsIAMConnectionStringProvider) ConnectionString(ctx context.Context) (string, error) {
@@ -175,7 +193,17 @@ func (p *rdsIAMConnectionStringProvider) ConnectionString(ctx context.Context) (
 	if err != nil {
 		return "", fmt.Errorf("building auth token: %w", err)
 	}
-	log.Printf("Signing RDS IAM token for Endpoint: %s User: %s Database: %s", p.RDSEndpoint, p.User, p.Database)
+
+	event := TokenSignEvent{
+		Endpoint:              p.RDSEndpoint,
+		User:                  p.User,
+		Database:              p.Database,
+		AssumeRoleARN:         p.AssumeRoleARN,
+		AssumeRoleSessionName: p.AssumeRoleSessionName,
+	}
+	for _, callback := range p.OnTokenSign {
+		callback(ctx, event)
+	}
 
 	dsnURL := &url.URL{
 		Scheme: "postgresql",
@@ -187,7 +215,7 @@ func (p *rdsIAMConnectionStringProvider) ConnectionString(ctx context.Context) (
 	return dsnURL.String(), nil
 }
 
-func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL) (ConnectionStringProvider, error) {
+func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL, onTokenSign []OnTokenSign) (ConnectionStringProvider, error) {
 	user := ""
 	if u.User != nil {
 		user = u.User.Username()
@@ -237,13 +265,13 @@ func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL) (Con
 
 	creds := awsCfg.Credentials
 	assumeRoleARN := q.Get("assume_role_arn")
+	var sessionName string
 	if assumeRoleARN != "" {
 		stsClient := sts.NewFromConfig(awsCfg)
-		sessionName := q.Get("assume_role_session_name")
+		sessionName = q.Get("assume_role_session_name")
 		if sessionName == "" {
 			sessionName = "pgutils-rds-iam"
 		}
-		log.Printf("RDS IAM Assuming Role: %s with session name: %s for Host: %s User: %s Database: %s", assumeRoleARN, sessionName, host, user, dbName)
 		assumeProvider := stscreds.NewAssumeRoleProvider(stsClient, assumeRoleARN, func(opts *stscreds.AssumeRoleOptions) {
 			opts.RoleSessionName = sessionName
 		})
@@ -251,10 +279,13 @@ func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL) (Con
 	}
 
 	return &rdsIAMConnectionStringProvider{
-		Region:              awsCfg.Region,
-		RDSEndpoint:         net.JoinHostPort(host, port),
-		User:                user,
-		Database:            dbName,
-		CredentialsProvider: creds,
+		Region:                awsCfg.Region,
+		RDSEndpoint:           net.JoinHostPort(host, port),
+		User:                  user,
+		Database:              dbName,
+		CredentialsProvider:   creds,
+		AssumeRoleARN:         assumeRoleARN,
+		AssumeRoleSessionName: sessionName,
+		OnTokenSign:           onTokenSign,
 	}, nil
 }
