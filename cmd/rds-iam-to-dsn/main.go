@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
-	"log"
 	"os"
 
 	"github.com/corbaltcode/go-libraries/pgutils"
@@ -24,9 +22,6 @@ func main() {
 
 	ctx := context.Background()
 
-	// Suppress package-level info logs from pgutils so stdout only contains the DSN.
-	log.SetOutput(io.Discard)
-
 	connectionStringProvider, err := pgutils.NewConnectionStringProviderFromURLString(ctx, rawURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create connection string provider: %v\n", err)
@@ -40,5 +35,5 @@ func main() {
 	}
 
 	// Print only the final DSN to stdout for command-substitution in scripts.
-	fmt.Fprintln(os.Stdout, dsnWithToken)
+	fmt.Println(dsnWithToken)
 }
