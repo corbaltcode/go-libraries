@@ -143,7 +143,10 @@ func addSearchPathToURL(rawURL string, searchPath string) (string, error) {
 	if v := q.Get("search_path"); v != "" {
 		return "", fmt.Errorf("search_path already set to %q", v)
 	}
-	q.Set("search_path", searchPath)
+	if v := q.Get("options"); v != "" {
+		return "", fmt.Errorf("options already set to %q", v)
+	}
+	q.Set("options", fmt.Sprintf("-csearch_path=%s", searchPath))
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
@@ -247,6 +250,7 @@ func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL, onTo
 	supportedParams := map[string]struct{}{
 		"assume_role_arn":          {},
 		"assume_role_session_name": {},
+		"search_path":              {},
 	}
 	for k := range q {
 		if _, ok := supportedParams[k]; !ok {
@@ -278,7 +282,7 @@ func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL, onTo
 		creds = aws.NewCredentialsCache(assumeProvider)
 	}
 
-	return &rdsIAMConnectionStringProvider{
+	var p ConnectionStringProvider = &rdsIAMConnectionStringProvider{
 		Region:                awsCfg.Region,
 		RDSEndpoint:           net.JoinHostPort(host, port),
 		User:                  user,
@@ -287,5 +291,11 @@ func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL, onTo
 		AssumeRoleARN:         assumeRoleARN,
 		AssumeRoleSessionName: sessionName,
 		OnTokenSign:           onTokenSign,
-	}, nil
+	}
+
+	if searchPath := q.Get("search_path"); searchPath != "" {
+		p = WithSchemaSearchPath(p, searchPath)
+	}
+
+	return p, nil
 }
