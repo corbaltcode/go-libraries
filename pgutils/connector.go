@@ -127,23 +127,20 @@ func MustConnectDB(conn driver.Connector) *sqlx.DB {
 	return db
 }
 
-// addSearchPathToURL returns a copy of u with search_path set in the query string.
-// It returns an error if search_path is already present.
+// addSearchPathToURL returns a copy of u with search_path set in the options parameter
+// of the query string. It returns an error if the search_path or options parameter is
+// already present.
 func addSearchPathToURL(rawURL string, searchPath string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", fmt.Errorf("url string failed to parse while adding search path: %w", err)
 	}
 
-	if searchPath == "" {
-		return u.String(), nil
-	}
-
 	q := u.Query()
-	if v := q.Get("search_path"); v != "" {
+	if v, ok := q["search_path"]; ok {
 		return "", fmt.Errorf("search_path already set to %q", v)
 	}
-	if v := q.Get("options"); v != "" {
+	if v, ok := q["options"]; ok {
 		return "", fmt.Errorf("options already set to %q", v)
 	}
 	q.Set("options", fmt.Sprintf("-csearch_path=%s", searchPath))
@@ -293,8 +290,11 @@ func newIAMConnectionStringProviderFromURL(ctx context.Context, u *url.URL, onTo
 		OnTokenSign:           onTokenSign,
 	}
 
-	if searchPath := q.Get("search_path"); searchPath != "" {
-		p = WithSchemaSearchPath(p, searchPath)
+	if searchPath, ok := q["search_path"]; ok {
+		if len(searchPath) > 1 {
+			return nil, fmt.Errorf("Multiple search_path values specified")
+		}
+		p = WithSchemaSearchPath(p, searchPath[0])
 	}
 
 	return p, nil
