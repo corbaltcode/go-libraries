@@ -4,11 +4,13 @@ A utility for initializing and configuring RDS PostgreSQL databases. This tool m
 
 ## Overview
 
-This tool performs two main tasks:
+This tool performs three main tasks:
 
 1. **Nessus scan user management** — Creates and maintains a dedicated database user (`nessus_scan_user`) for Nessus security scans, with credentials stored in AWS Secrets Manager.
 
 2. **RDS IAM authentication setup** — Grants the `rds_iam` role to the admin user, enabling IAM-based database authentication for future connections.
+
+3. **pgaudit extension** — Runs `CREATE EXTENSION IF NOT EXISTS pgaudit` so audit logging required by Nessus is active. The parameter group must already include `pgaudit` in `shared_preload_libraries`.
 
 ## How It Works
 
