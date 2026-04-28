@@ -1,6 +1,6 @@
 # RDS Database Initialization Tool
 
-A utility for initializing and configuring RDS PostgreSQL databases. This tool manages the `nessus_scan_user` account for security scanning and enables RDS IAM authentication for the admin user.
+A utility for initializing and configuring RDS PostgreSQL databases. This tool manages the `nessus_scan_user` account for security scanning, enables RDS IAM authentication for the admin user, and enables the `pgaudit` extension for audit logging.
 
 ## Overview
 
