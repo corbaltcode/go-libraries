@@ -254,6 +254,12 @@ func main() {
 		log.Printf("Created secret %q in Secrets Manager.", secretName)
 	}
 
+	// pgaudit requires `shared_preload_libraries = pgaudit` in the parameter
+	// group; CREATE EXTENSION is the per-database step that completes setup.
+	if _, err := db.ExecContext(ctx, "CREATE EXTENSION IF NOT EXISTS pgaudit"); err != nil {
+		log.Fatalf("Failed to create pgaudit extension: %v", err)
+	}
+
 	// 1) Ensure user exists (no password embedded)
 	ensureUserSQL := fmt.Sprintf(`
 DO $do$
