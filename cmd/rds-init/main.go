@@ -256,7 +256,11 @@ func main() {
 
 	// pgaudit requires `shared_preload_libraries = pgaudit` in the parameter
 	// group; CREATE EXTENSION is the per-database step that completes setup.
-	if _, err := db.ExecContext(ctx, "CREATE EXTENSION IF NOT EXISTS pgaudit"); err != nil {
+	// The extension is created in a schema called "extensions" so that it isn't dropped when we drop "public" during db resets.
+	if _, err := db.ExecContext(ctx, "CREATE SCHEMA IF NOT EXISTS extensions"); err != nil {
+      log.Fatalf("Failed to create extensions schema: %v", err)
+  }
+	if _, err := db.ExecContext(ctx, "CREATE EXTENSION IF NOT EXISTS pgaudit WITH SCHEMA extensions"); err != nil {
 		log.Fatalf("Failed to create pgaudit extension: %v", err)
 	}
 

@@ -10,7 +10,7 @@ This tool performs three main tasks:
 
 2. **RDS IAM authentication setup** — Grants the `rds_iam` role to the admin user, enabling IAM-based database authentication for future connections.
 
-3. **pgaudit extension** — Runs `CREATE EXTENSION IF NOT EXISTS pgaudit` so audit logging required by Nessus is active. The parameter group must already include `pgaudit` in `shared_preload_libraries`.
+3. **pgaudit extension** — Runs `CREATE EXTENSION IF NOT EXISTS pgaudit WITH SCHEMA extensions` so audit logging required by Nessus is active. The parameter group must already include `pgaudit` in `shared_preload_libraries`.
 
 ## How It Works
 
