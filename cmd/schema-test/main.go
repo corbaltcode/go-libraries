@@ -24,8 +24,12 @@ func main() {
 
 	err := migrations.SchemaTest(&cfg, allMigrations)
 	if err != nil {
-		log.Fatalf("Schema test failed: %s", err)
+		log.Fatalf("Frist schema test failed: %s", err)
+	}
+	err = migrations.SchemaTest(&cfg, allMigrations)
+	if err != nil {
+		log.Fatalf("Second schema test failed: %s", err)
 	}
 
-	log.Printf("Schema test succeeded!")
+	log.Printf("Schema tests succeeded!")
 }
