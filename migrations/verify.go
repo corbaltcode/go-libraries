@@ -107,15 +107,6 @@ func migrateAndRollback(emptyDBConfig *PostgresConfig, db *sqlx.DB, allMigration
 	return err
 }
 
-func resetDB(db *sqlx.DB, migrationsToRollBack []NamedMigration) error {
-	err := Rollback(db, migrationsToRollBack, 0)
-	if err != nil {
-		return err
-	}
-	_, err = db.Exec("DROP TABLE migration")
-	return err
-}
-
 // Schema test expects a new *empty* postgres database.
 // It will:
 //  1. Apply all migrations
@@ -168,9 +159,14 @@ func SchemaTest(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration) e
 			return err
 		}
 	}
-	err = resetDB(db, allMigrations)
+	// Reset database back to its initial state.
+	err = Rollback(db, allMigrations, 0)
 	if err != nil {
-		return fmt.Errorf("Error resetting DB back to starting point: %w", err)
+		return err
+	}
+	_, err = db.Exec("DROP TABLE migration")
+	if err != nil {
+		return fmt.Errorf("Error dropping migration table: %w", err)
 	}
 	return nil
 }

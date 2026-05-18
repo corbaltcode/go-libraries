@@ -24,7 +24,7 @@ func main() {
 
 	err := migrations.SchemaTest(&cfg, allMigrations)
 	if err != nil {
-		log.Fatalf("Frist schema test failed: %s", err)
+		log.Fatalf("First schema test failed: %s", err)
 	}
 	err = migrations.SchemaTest(&cfg, allMigrations)
 	if err != nil {
