@@ -159,5 +159,14 @@ func SchemaTest(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration) e
 			return err
 		}
 	}
+	// Reset database back to its initial state.
+	err = Rollback(db, allMigrations, 0)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec("DROP TABLE migration")
+	if err != nil {
+		return fmt.Errorf("Error dropping migration table: %w", err)
+	}
 	return nil
 }
