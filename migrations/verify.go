@@ -107,22 +107,9 @@ func migrateAndRollback(emptyDBConfig *PostgresConfig, db *sqlx.DB, allMigration
 	return err
 }
 
-// Schema test expects a new *empty* postgres database.
-// It will:
-//  1. Apply all migrations
-//  2. Reverse all migrations
-//  3. For each migration:
-//     a. Apply the migration
-//     b. Reverse the migration
-//     c. Apply the migration again
-//
-// Before and after each step it will use pg_dump to dump the database schema.
-// It will verify that:
-// A. The schema is the same after reversing as before applying.
-// B. (If re-applying) The schema is the same after applying as after re-applying.
-//
-// You must have `pg_dump` in your `PATH` to run this.
-func SchemaTest(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration) error {
+// Does a SchemaTest but calls the provided setup function after verifying that the
+// database is empty.
+func SchemaTestWithSetup(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration, setup func() error) error {
 	for _, v := range []string{
 		emptyDBConfig.Host,
 		emptyDBConfig.Port,
@@ -144,6 +131,10 @@ func SchemaTest(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration) e
 	err = verifyNoTables(db)
 	if err != nil {
 		return err
+	}
+	err = setup()
+	if err != nil {
+		return fmt.Errorf("setup: %s", err)
 	}
 	err = Migrate(db, []NamedMigration{})
 	if err != nil {
@@ -169,4 +160,23 @@ func SchemaTest(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration) e
 		return fmt.Errorf("Error dropping migration table: %w", err)
 	}
 	return nil
+}
+
+// Schema test expects a new *empty* postgres database.
+// It will:
+//  1. Apply all migrations
+//  2. Reverse all migrations
+//  3. For each migration:
+//     a. Apply the migration
+//     b. Reverse the migration
+//     c. Apply the migration again
+//
+// Before and after each step it will use pg_dump to dump the database schema.
+// It will verify that:
+// A. The schema is the same after reversing as before applying.
+// B. (If re-applying) The schema is the same after applying as after re-applying.
+//
+// You must have `pg_dump` in your `PATH` to run this.
+func SchemaTest(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration) error {
+	return SchemaTestWithSetup(emptyDBConfig, allMigrations, func() error { return nil })
 }
