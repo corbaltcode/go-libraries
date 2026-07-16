@@ -45,7 +45,7 @@ func dump(c *PostgresConfig) ([]byte, error) {
 	return out, err
 }
 
-func verifyNoTables(db *sqlx.DB) error {
+func verifyNoRelations(db *sqlx.DB) error {
 	// Based on the query run for the "\d" command in psql
 	// (as revealed when started with -E flag).
 	q := `SELECT 1 FROM pg_catalog.pg_class c
@@ -60,9 +60,9 @@ func verifyNoTables(db *sqlx.DB) error {
 		// Expected
 		return nil
 	} else if err != nil {
-		return fmt.Errorf("Error checking for existing tables: %w", err)
+		return fmt.Errorf("Error checking for existing relations: %w", err)
 	}
-	return errors.New("Existing tables found. You must run SchemaTest on an empty database.")
+	return errors.New("Existing relations found. You must run this on an empty database.")
 }
 
 func migrateAndRollback(emptyDBConfig *PostgresConfig, db *sqlx.DB, allMigrations []NamedMigration, migrateToIndex, rollbackThroughIndex int, repeatForward bool) error {
@@ -128,7 +128,7 @@ func SchemaTestWithSetup(emptyDBConfig *PostgresConfig, allMigrations []NamedMig
 	if err != nil {
 		return fmt.Errorf("Error connecting: %s", err)
 	}
-	err = verifyNoTables(db)
+	err = verifyNoRelations(db)
 	if err != nil {
 		return err
 	}
