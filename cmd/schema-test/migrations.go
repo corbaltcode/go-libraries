@@ -2,6 +2,20 @@ package main
 
 import "github.com/corbaltcode/go-libraries/migrations"
 
+var commonMigrations = []migrations.NamedMigration{
+	{
+		Name: "Create a common table",
+		Migration: migrations.StaticMigration([]string{
+			`CREATE TABLE common (
+				id serial PRIMARY KEY
+			)`,
+		}),
+		Reverse: migrations.StaticMigration([]string{
+			`DROP TABLE common`,
+		}),
+	},
+}
+
 var allMigrations = []migrations.NamedMigration{
 	{
 		Name: "Create a table",
@@ -75,6 +89,18 @@ var allMigrations = []migrations.NamedMigration{
 		}),
 		Reverse: migrations.StaticMigration([]string{
 			`DROP VIEW v`,
+		}),
+	},
+	{
+		Name: "Create a table referencing a common table",
+		Migration: migrations.StaticMigration([]string{
+			`CREATE TABLE dependent (
+				id serial PRIMARY KEY,
+				common_id integer REFERENCES common.common(id)
+			)`,
+		}),
+		Reverse: migrations.StaticMigration([]string{
+			`DROP TABLE dependent`,
 		}),
 	},
 }

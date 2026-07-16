@@ -45,7 +45,7 @@ func dump(c *PostgresConfig) ([]byte, error) {
 	return out, err
 }
 
-func verifyNoTables(db *sqlx.DB) error {
+func verifyNoRelations(db *sqlx.DB) error {
 	// Based on the query run for the "\d" command in psql
 	// (as revealed when started with -E flag).
 	q := `SELECT 1 FROM pg_catalog.pg_class c
@@ -60,9 +60,9 @@ func verifyNoTables(db *sqlx.DB) error {
 		// Expected
 		return nil
 	} else if err != nil {
-		return fmt.Errorf("Error checking for existing tables: %w", err)
+		return fmt.Errorf("Error checking for existing relations: %w", err)
 	}
-	return errors.New("Existing tables found. You must run SchemaTest on an empty database.")
+	return errors.New("Existing relations found. You must run this on an empty database.")
 }
 
 func migrateAndRollback(emptyDBConfig *PostgresConfig, db *sqlx.DB, allMigrations []NamedMigration, migrateToIndex, rollbackThroughIndex int, repeatForward bool) error {
@@ -107,22 +107,9 @@ func migrateAndRollback(emptyDBConfig *PostgresConfig, db *sqlx.DB, allMigration
 	return err
 }
 
-// Schema test expects a new *empty* postgres database.
-// It will:
-//  1. Apply all migrations
-//  2. Reverse all migrations
-//  3. For each migration:
-//     a. Apply the migration
-//     b. Reverse the migration
-//     c. Apply the migration again
-//
-// Before and after each step it will use pg_dump to dump the database schema.
-// It will verify that:
-// A. The schema is the same after reversing as before applying.
-// B. (If re-applying) The schema is the same after applying as after re-applying.
-//
-// You must have `pg_dump` in your `PATH` to run this.
-func SchemaTest(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration) error {
+// Does the same thing as SchemaTest but calls the provided setup function after verifying that the
+// database is empty.
+func SchemaTestWithSetup(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration, setup func() error) error {
 	for _, v := range []string{
 		emptyDBConfig.Host,
 		emptyDBConfig.Port,
@@ -141,9 +128,13 @@ func SchemaTest(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration) e
 	if err != nil {
 		return fmt.Errorf("Error connecting: %s", err)
 	}
-	err = verifyNoTables(db)
+	err = verifyNoRelations(db)
 	if err != nil {
 		return err
+	}
+	err = setup()
+	if err != nil {
+		return fmt.Errorf("setup: %s", err)
 	}
 	err = Migrate(db, []NamedMigration{})
 	if err != nil {
@@ -169,4 +160,23 @@ func SchemaTest(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration) e
 		return fmt.Errorf("Error dropping migration table: %w", err)
 	}
 	return nil
+}
+
+// Schema test expects a new *empty* postgres database.
+// It will:
+//  1. Apply all migrations
+//  2. Reverse all migrations
+//  3. For each migration:
+//     a. Apply the migration
+//     b. Reverse the migration
+//     c. Apply the migration again
+//
+// Before and after each step it will use pg_dump to dump the database schema.
+// It will verify that:
+// A. The schema is the same after reversing as before applying.
+// B. (If re-applying) The schema is the same after applying as after re-applying.
+//
+// You must have `pg_dump` in your `PATH` to run this.
+func SchemaTest(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration) error {
+	return SchemaTestWithSetup(emptyDBConfig, allMigrations, func() error { return nil })
 }
