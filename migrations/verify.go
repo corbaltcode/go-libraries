@@ -107,7 +107,7 @@ func migrateAndRollback(emptyDBConfig *PostgresConfig, db *sqlx.DB, allMigration
 	return err
 }
 
-// Does a SchemaTest but calls the provided setup function after verifying that the
+// Does the same thing as SchemaTest but calls the provided setup function after verifying that the
 // database is empty.
 func SchemaTestWithSetup(emptyDBConfig *PostgresConfig, allMigrations []NamedMigration, setup func() error) error {
 	for _, v := range []string{
